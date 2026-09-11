@@ -84,8 +84,6 @@ Cada nodo expone una API: REST (OpenAPI) en el ControlNode y gRPC (`proto/dfsha.
 - Despliegue en **AWS Academy**: 3 instancias EC2 (una por zona), cada una con 1 ControlNode y 1–2 DataNodes; el cliente accede por Internet (HTTPS 8443 y gRPC 50051+).
 
 ## 6. Documentación
-
-- Especificación completa del Hito 1: [`docs/Hito1-Especificacion.md`](docs/Hito1-Especificacion.md)
 - Contrato gRPC: `proto/dfsha.proto` · API REST: `docs/openapi.yaml`
 
 ## 7. Cronograma
