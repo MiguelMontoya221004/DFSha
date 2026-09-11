@@ -40,7 +40,7 @@ Almacenar archivos grandes en un solo servidor limita la capacidad, el rendimien
 | Componente | Lenguaje | Responsabilidad |
 |---|---|---|
 | **Cliente** | Python | CLI, shell, SDK, cifrado AES-256-GCM, transferencia paralela de bloques con reintentos |
-| **ControlNode** (×3) | Java 21 | Metadatos y namespace replicados con Raft, usuarios/ACL/JWT, colocación de réplicas, re-replicación, locks |
+| **ControlNode** (×3) | Java 21 | Metadatos y namespace replicados con Raft, usuarios/ACL/JWT, colocación de réplicas, replicación, locks |
 | **DataNode** (×N) | Python | Almacenamiento de bloques, pipeline de replicación, heartbeats y reportes, verificación de checksums |
 
 **Protocolos de comunicación**
