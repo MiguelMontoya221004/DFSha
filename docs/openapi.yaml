@@ -1,0 +1,320 @@
+openapi: 3.0.3
+info:
+  title: DFSha ControlNode API
+  version: 0.2.0
+  description: |
+    API REST del plano de control de DFSha (Hito 2).
+    Autenticación: JWT (Bearer) obtenido en /auth/login. Rutas públicas: /auth/*, /health.
+    Los bytes de los archivos NO pasan por esta API: se transfieren por gRPC directamente
+    contra los DataNodes (ver proto/dfsha.proto).
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Entorno local (Hito 2, sin TLS)
+  - url: https://cn1.dfsha.local:8443/api/v1
+    description: Entorno con TLS (Hito 3)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Salud del ControlNode
+      security: []
+      responses:
+        "200":
+          description: Nodo vivo
+          content:
+            application/json:
+              example: {status: UP, nodeId: cn1, role: LEADER, dataNodesAlive: 4}
+
+  /auth/register:
+    post:
+      summary: Registrar usuario (crea /home/<usuario> con permisos rwx------)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Credentials"}
+      responses:
+        "201":
+          description: Usuario creado
+          content:
+            application/json:
+              example: {username: ana, home: /home/ana}
+        "409": {$ref: "#/components/responses/Error"}
+
+  /auth/login:
+    post:
+      summary: Iniciar sesión y obtener el JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Credentials"}
+      responses:
+        "200":
+          description: Sesión creada
+          content:
+            application/json:
+              example: {token: eyJhbGciOiJIUzI1NiJ9..., expiresIn: 3600, username: ana, role: user}
+        "401": {$ref: "#/components/responses/Error"}
+
+  /fs/list:
+    get:
+      summary: Listar un directorio (ls)
+      parameters:
+        - {name: path, in: query, required: false, schema: {type: string, default: "/"}}
+      responses:
+        "200":
+          description: Contenido del directorio
+          content:
+            application/json:
+              example:
+                path: /home/ana
+                entries:
+                  - {name: datos, path: /home/ana/datos, type: dir, size: 0, owner: ana, group: ana,
+                     permissions: "rwxr-x---", modifiedAt: 1758500000000}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+
+  /fs/stat:
+    get:
+      summary: Metadatos de una ruta (stat)
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Metadatos
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Entry"}
+        "404": {$ref: "#/components/responses/Error"}
+
+  /fs/mkdir:
+    post:
+      summary: Crear directorio (mkdir [-p])
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {path: /home/ana/datos/2026, parents: true}
+      responses:
+        "200":
+          description: Directorio creado
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Entry"}
+        "409": {$ref: "#/components/responses/Error"}
+
+  /fs/delete:
+    delete:
+      summary: Borrar archivo o directorio (rm / rmdir)
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+        - {name: recursive, in: query, required: false, schema: {type: boolean, default: false}}
+      responses:
+        "200":
+          description: Borrado; los bloques se liberan de forma diferida en los DataNodes
+          content:
+            application/json:
+              example: {deleted: /home/ana/datos/viejo.bin, recursive: false}
+        "409": {$ref: "#/components/responses/Error"}
+
+  /fs/move:
+    post:
+      summary: Mover o renombrar (mv). Operación atómica de metadatos, no mueve bloques
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {src: /home/ana/a.bin, dst: /shared/a.bin}
+      responses:
+        "200":
+          description: Movido
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Entry"}
+
+  /files/create:
+    post:
+      summary: Abrir un archivo para escritura (crea una versión borrador y otorga el lease)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {path: /home/ana/datos/video.mp4, overwrite: false}
+      responses:
+        "200":
+          description: Versión borrador creada
+          content:
+            application/json:
+              example: {fileId: 8f3e..., versionId: 0c52..., leaseId: 7a1d...,
+                        blockSize: 4194304, path: /home/ana/datos/video.mp4}
+        "409":
+          description: |
+            ALREADY_EXISTS (sin overwrite) · LOCKED (otro escritor tiene el lease) ·
+            IS_A_DIRECTORY
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ApiError"}
+
+  /versions/{versionId}/blocks:
+    post:
+      summary: Asignar un bloque y obtener su pipeline de DataNodes y su token
+      parameters:
+        - {name: versionId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {index: 0}
+      responses:
+        "200":
+          description: Bloque asignado
+          content:
+            application/json:
+              example:
+                blockId: 3f0a9c12-...
+                index: 0
+                token: eyJ...base64.firma
+                pipeline:
+                  - {nodeId: dn1, address: "dn1:50051", zone: zona-a}
+                  - {nodeId: dn3, address: "dn3:50051", zone: zona-b}
+                  - {nodeId: dn4, address: "dn4:50051", zone: zona-c}
+        "503":
+          description: NO_DATANODES — no hay DataNodes con espacio suficiente
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ApiError"}
+
+  /versions/{versionId}/commit:
+    post:
+      summary: Confirmar la versión (publicación atómica); exige quórum de réplicas
+      parameters:
+        - {name: versionId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              blocks:
+                - {index: 0, blockId: 3f0a9c12-..., size: 4194304, sha256: 862966e1...}
+                - {index: 1, blockId: 9b1d7e40-..., size: 4194304, sha256: 58bec40b...}
+      responses:
+        "200":
+          description: Versión publicada y visible para los lectores
+          content:
+            application/json:
+              example: {path: /home/ana/datos/video.mp4, versionId: 0c52..., size: 8388608, blockCount: 2}
+        "409":
+          description: NOT_ENOUGH_REPLICAS · NOT_A_DRAFT · LEASE_EXPIRED
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ApiError"}
+
+  /versions/{versionId}/abort:
+    post:
+      summary: Descartar la versión borrador y liberar sus bloques
+      parameters:
+        - {name: versionId, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Versión abortada
+          content:
+            application/json:
+              example: {aborted: 0c52...}
+
+  /files/open:
+    post:
+      summary: Abrir un archivo para lectura (devuelve bloques, réplicas vivas y tokens)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: {path: /home/ana/datos/video.mp4}
+      responses:
+        "200":
+          description: Última versión confirmada
+          content:
+            application/json:
+              example:
+                path: /home/ana/datos/video.mp4
+                fileId: 8f3e...
+                versionId: 0c52...
+                size: 12582912
+                blockSize: 4194304
+                blocks:
+                  - index: 0
+                    blockId: 3f0a9c12-...
+                    size: 4194304
+                    sha256: 862966e1...
+                    token: eyJ...base64.firma
+                    replicas:
+                      - {nodeId: dn1, address: "dn1:50051", zone: zona-a}
+                      - {nodeId: dn3, address: "dn3:50051", zone: zona-b}
+        "503":
+          description: NO_REPLICA_AVAILABLE — ningún DataNode vivo tiene el bloque
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ApiError"}
+
+  /cluster/status:
+    get:
+      summary: Estado del clúster (RF5)
+      responses:
+        "200":
+          description: ControlNode, DataNodes y bloques sub-replicados
+          content:
+            application/json:
+              example:
+                controlNode: {nodeId: cn1, clusterId: dfsha-docker, role: LEADER, raft: "pendiente (Hito 3)"}
+                replicationFactor: 3
+                minReplicas: 2
+                blockSize: 4194304
+                trackedBlocks: 12
+                dataNodes:
+                  - {nodeId: dn1, address: "dn1:50051", zone: zona-a, alive: true,
+                     capacityBytes: 8589934592, usedBytes: 12582912, blockCount: 3,
+                     activeTransfers: 0, loadScore: 0.001, lastHeartbeatMsAgo: 812}
+                underReplicatedBlocks: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Credentials:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string, example: ana}
+        password: {type: string, format: password, example: secreto123}
+    Entry:
+      type: object
+      properties:
+        name: {type: string}
+        path: {type: string}
+        type: {type: string, enum: [dir, file]}
+        size: {type: integer, format: int64}
+        owner: {type: string}
+        group: {type: string}
+        permissions: {type: string, example: "rw-r-----"}
+        modifiedAt: {type: integer, format: int64}
+        blocks: {type: integer, nullable: true}
+        blockSize: {type: integer, nullable: true}
+    ApiError:
+      type: object
+      properties:
+        error: {type: string, example: NOT_ENOUGH_REPLICAS}
+        message: {type: string}
+  responses:
+    Error:
+      description: Error de negocio
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ApiError"}

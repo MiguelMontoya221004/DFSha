@@ -1,0 +1,35 @@
+server:
+  port: ${DFSHA_REST_PORT:8080}
+
+spring:
+  application:
+    name: dfsha-controlnode
+  jackson:
+    default-property-inclusion: non_null
+
+dfsha:
+  node-id: ${DFSHA_NODE_ID:cn1}
+  cluster-id: ${DFSHA_CLUSTER_ID:dfsha-local}
+  grpc-port: ${DFSHA_GRPC_PORT:9090}
+  # Tamaño de bloque por defecto: 4 MiB
+  block-size: ${DFSHA_BLOCK_SIZE:4194304}
+  replication-factor: ${DFSHA_REPLICATION:3}
+  min-replicas: ${DFSHA_MIN_REPLICAS:2}
+  heartbeat-interval-ms: ${DFSHA_HEARTBEAT_MS:3000}
+  # Un DataNode se considera muerto si no envía heartbeat en este tiempo
+  node-dead-after-ms: ${DFSHA_NODE_DEAD_MS:15000}
+  # Secretos compartidos (en el Hito 3 se reemplazan por gestión de secretos + mTLS)
+  jwt-secret: ${DFSHA_JWT_SECRET:dfsha-jwt-secret-cambiar-en-produccion-0123456789}
+  jwt-ttl-minutes: ${DFSHA_JWT_TTL_MIN:60}
+  block-token-secret: ${DFSHA_BLOCK_SECRET:dfsha-block-secret-cambiar-en-produccion}
+  block-token-ttl-seconds: ${DFSHA_BLOCK_TOKEN_TTL:600}
+  lease-ttl-seconds: ${DFSHA_LEASE_TTL:120}
+  # Usuario administrador creado al arrancar
+  admin-user: ${DFSHA_ADMIN_USER:admin}
+  admin-password: ${DFSHA_ADMIN_PASSWORD:admin123}
+
+logging:
+  level:
+    io.dfsha: ${DFSHA_LOG_LEVEL:INFO}
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%logger{20}] %msg%n"

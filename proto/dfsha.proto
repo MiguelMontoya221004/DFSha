@@ -1,0 +1,156 @@
+// DFSha — contrato gRPC compartido entre Cliente (Python), DataNode (Python) y ControlNode (Java).
+// Hito 2 · ST0263 / SI3007 2026-2
+syntax = "proto3";
+
+package dfsha.v1;
+
+option java_package = "io.dfsha.proto";
+option java_multiple_files = true;
+
+// ===========================================================================
+// DataTransfer — plano de datos.
+//   Cliente  -> DataNode : WriteBlock / ReadBlock
+//   DataNode -> DataNode : WriteBlock (pipeline de replicación y re-replicación)
+// ===========================================================================
+service DataTransfer {
+  // Escribe un bloque. El primer mensaje del stream debe ser el header y los
+  // siguientes los chunks de datos. El DataNode reenvía el mismo stream al
+  // siguiente nodo del pipeline mientras escribe en disco.
+  rpc WriteBlock (stream WriteBlockRequest) returns (WriteBlockResponse);
+
+  // Lee un bloque (o un rango) como stream de chunks.
+  rpc ReadBlock (ReadBlockRequest) returns (stream BlockChunk);
+
+  // Estado del DataNode (usado por el cliente para elegir réplica y por pruebas).
+  rpc NodeStatus (NodeStatusRequest) returns (NodeStatusResponse);
+}
+
+message WriteBlockRequest {
+  oneof payload {
+    BlockHeader header = 1;  // primer mensaje
+    bytes chunk = 2;         // siguientes mensajes (<= 1 MiB cada uno)
+  }
+}
+
+message BlockHeader {
+  string block_id = 1;              // identificador global del bloque
+  string block_token = 2;           // token firmado por el ControlNode (HMAC-SHA256)
+  repeated string pipeline = 3;     // DataNodes siguientes: "host:puerto"
+  int64 size = 4;                   // tamaño total esperado en bytes
+  string sha256 = 5;                // checksum del contenido
+  string client_id = 6;             // quién origina la escritura (auditoría)
+}
+
+message WriteBlockResponse {
+  bool ok = 1;
+  repeated string stored_on = 2;    // node_id de los DataNodes que confirmaron
+  string error = 3;
+}
+
+message ReadBlockRequest {
+  string block_id = 1;
+  string block_token = 2;
+  int64 offset = 3;
+  int64 length = 4;                 // 0 = hasta el final del bloque
+}
+
+message BlockChunk { bytes data = 1; }
+
+message NodeStatusRequest {}
+
+message NodeStatusResponse {
+  string node_id = 1;
+  string zone = 2;
+  int64 capacity_bytes = 3;
+  int64 used_bytes = 4;
+  int32 block_count = 5;
+  int32 active_transfers = 6;
+}
+
+// ===========================================================================
+// NodeControl — plano de control.
+//   DataNode -> ControlNode : registro, heartbeats, reportes de bloques
+//   ControlNode -> DataNode : comandos dentro de la respuesta del heartbeat
+// ===========================================================================
+service NodeControl {
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc BlockReport (BlockReportRequest) returns (Ack);
+  rpc BlockReceived (BlockReceivedRequest) returns (Ack);
+  rpc ReportCorrupt (CorruptBlockRequest) returns (Ack);
+}
+
+message RegisterRequest {
+  string node_id = 1;
+  string address = 2;               // dirección anunciada: "host:puerto"
+  string zone = 3;                  // máquina / zona de disponibilidad
+  int64 capacity_bytes = 4;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  int32 heartbeat_interval_ms = 2;
+  string cluster_id = 3;
+  string message = 4;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  int64 used_bytes = 2;
+  int64 free_bytes = 3;
+  int32 active_transfers = 4;
+  int32 block_count = 5;
+}
+
+message HeartbeatResponse {
+  bool registered = 1;              // false => el DataNode debe volver a registrarse
+  bool is_leader = 2;               // en el Hito 3 indica el líder Raft
+  repeated Command commands = 3;
+}
+
+message Command {
+  oneof cmd {
+    ReplicateCommand replicate = 1;
+    DeleteCommand delete = 2;
+  }
+}
+
+// El ControlNode ordena a un DataNode que copie un bloque a otro DataNode (P2P).
+message ReplicateCommand {
+  string block_id = 1;
+  string target_address = 2;
+  string block_token = 3;
+  string sha256 = 4;
+  int64 size = 5;
+}
+
+message DeleteCommand { repeated string block_ids = 1; }
+
+message BlockReportRequest {
+  string node_id = 1;
+  repeated BlockInfo blocks = 2;
+  bool full_report = 3;
+}
+
+message BlockReceivedRequest {
+  string node_id = 1;
+  BlockInfo block = 2;
+}
+
+message CorruptBlockRequest {
+  string reporter = 1;              // node_id o "client:<usuario>"
+  string node_id = 2;               // dónde está la réplica corrupta
+  string block_id = 3;
+  string detail = 4;
+}
+
+message BlockInfo {
+  string block_id = 1;
+  int64 size = 2;
+  string sha256 = 3;
+}
+
+message Ack {
+  bool ok = 1;
+  string message = 2;
+}

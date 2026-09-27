@@ -1,0 +1,22 @@
+# Java / Maven
+target/
+*.class
+*.jar
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Ejecución local
+.run/
+*.log
+session.json
+deploy/datos/*
+!deploy/datos/README.txt
+
+# Editores
+.idea/
+.vscode/
+*.iml

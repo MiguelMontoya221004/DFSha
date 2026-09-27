@@ -45,13 +45,17 @@ Almacenar archivos grandes en un solo servidor limita la capacidad, el rendimien
 
 **Protocolos de comunicación**
 
-| Comunicación | Protocolo | Seguridad |
-|---|---|---|
-| Cliente ↔ ControlNode | REST sobre HTTPS (JSON) | TLS 1.3 + JWT / API key |
-| Cliente ↔ DataNode | gRPC streaming | TLS 1.3 + token de bloque firmado (HMAC) |
-| ControlNode ↔ ControlNode | Raft (Apache Ratis sobre gRPC) | mTLS |
-| ControlNode ↔ DataNode | gRPC (registro, heartbeats, comandos) | mTLS |
-| DataNode ↔ DataNode | gRPC streaming (replicación) | mTLS |
+| Comunicación | Protocolo | Puerto | Seguridad | Estado |
+|---|---|---|---|---|
+| Cliente ↔ ControlNode | REST sobre HTTP/HTTPS (JSON) | 8080 | JWT + ACL · TLS en el Hito 3 | implementado |
+| Cliente ↔ DataNode | gRPC streaming | 50051 | Token de bloque HMAC · TLS en el Hito 3 | implementado |
+| ControlNode ↔ DataNode | gRPC (registro, heartbeats, comandos) | 9090 | mTLS en el Hito 3 | implementado |
+| DataNode ↔ DataNode | gRPC streaming (pipeline y re-replicación) | 50051 | Token de bloque · mTLS en el Hito 3 | implementado |
+| ControlNode ↔ ControlNode | Raft (Apache Ratis sobre gRPC) | 9500 | mTLS | Hito 3 |
+
+Detalle completo de mensajes, tiempos, reintentos y códigos de error:
+[`docs/comunicaciones.md`](docs/comunicaciones.md) · contratos en
+[`proto/dfsha.proto`](proto/dfsha.proto) y [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## 3. Requerimientos funcionales
 
@@ -78,19 +82,130 @@ Cada nodo expone una API: REST (OpenAPI) en el ControlNode y gRPC (`proto/dfsha.
 | **RNF7** | Transparencia | Tres niveles: SDK/API, shell con rutas relativas y (opcional) montaje FUSE como carpeta local. La ubicación de los bloques siempre se resuelve dinámicamente en cada apertura |
 | **RNF8** | Requisitos adicionales | Se incorporarán las aclaraciones que defina el profesor |
 
-## 5. Entorno de ejecución
+## 5. Estado del proyecto
 
-- Cada nodo corre en un contenedor **Docker**. Entorno local: `docker compose` con 3 ControlNodes, 4 DataNodes y 1 cliente.
-- Despliegue en **AWS Academy**: 3 instancias EC2 (una por zona), cada una con 1 ControlNode y 1–2 DataNodes; el cliente accede por Internet (HTTPS 8443 y gRPC 50051+).
+| Hito | Contenido | Estado |
+|---|---|---|
+| Hito 1 | Especificación del servicio, RF/RNF, arquitectura, contratos | completo |
+| **Hito 2** | **Arquitectura distribuida funcionando y protocolos de comunicación** | **completo** |
+| Hito 3 | Raft (3 ControlNodes), TLS/mTLS, 2FA, API keys, cifrado en reposo | pendiente |
+| Hito 4 | Pruebas de rendimiento en AWS, informe y video | pendiente |
 
-## 6. Documentación
-- Contrato gRPC: `proto/dfsha.proto` · API REST: `docs/openapi.yaml`
+Lo que ya funciona (Hito 2), verificado por `tests/e2e_test.py` (23 pruebas, todas en verde):
 
-## 7. Cronograma
+- Espacio de nombres jerárquico multiusuario con ACL: `ls`, `cd`, `pwd`, `mkdir -p`, `rm -r`, `mv`, `stat`.
+- Particionamiento en bloques de 4 MiB con **3 réplicas en zonas distintas**, colocadas con *power of two choices* según carga y espacio libre.
+- Escritura con **pipeline de replicación** (el cliente sube los datos una sola vez) y **quórum de 2 de 3** para publicar la versión.
+- Lectura **paralela** (4 hilos) con **failover** entre réplicas y verificación SHA-256 de cada bloque.
+- Versiones inmutables con publicación atómica y **copy-on-write** en escrituras parciales.
+- **Un solo escritor por archivo** mediante lease con expiración.
+- **Heartbeats, detección de nodos muertos y re-replicación P2P** automática.
+- Seguridad básica: bcrypt, JWT, ACL tipo POSIX y **tokens de bloque HMAC** verificados por los DataNodes.
+
+## 6. Estructura del repositorio
+
+```
+DFSha/
+├── proto/dfsha.proto          contrato gRPC compartido (Java y Python)
+├── controlnode/               ControlNode · Java 21 + Spring Boot + gRPC
+│   └── src/main/java/io/dfsha/controlnode/
+│       ├── api/               controladores REST y manejo de errores
+│       ├── grpc/              servicio NodeControl para los DataNodes
+│       ├── metadata/          MetadataStore (punto de extensión para Raft en el Hito 3)
+│       ├── model/             INode, FileVersion, BlockMeta, DataNodeInfo, Lease, User
+│       ├── security/          JWT, tokens de bloque, filtro de autenticación
+│       └── service/           namespace, archivos, usuarios y BlockManager
+├── datanode/dfsha_datanode/   DataNode · Python + gRPC
+│   ├── service.py             WriteBlock con pipeline y ReadBlock en streaming
+│   ├── storage.py             bloques en disco con escritura atómica y checksums
+│   ├── controlnode.py         registro, heartbeats, reportes y ejecución de comandos
+│   └── tokens.py              verificación de tokens de bloque
+├── client/dfsha/              Cliente · SDK y CLI en Python (Typer)
+│   ├── client.py              SDK: REST + transferencia paralela de bloques
+│   ├── cli.py                 comandos: login, ls, put, get, stat, write, status, shell
+│   └── session.py             sesión local (token y directorio de trabajo)
+├── deploy/docker-compose.yml  clúster local: 1 ControlNode + 4 DataNodes + cliente
+├── scripts/                   gen_proto.sh · run-local.sh · stop-local.sh
+├── tests/e2e_test.py          suite end-to-end (funcional, fallos y seguridad)
+└── docs/                      comunicaciones.md · openapi.yaml · pruebas-hito2.md
+```
+
+## 7. Cómo ejecutarlo
+
+### Con Docker (recomendado)
+
+```bash
+cd deploy
+docker compose up -d --build           # 1 ControlNode + 4 DataNodes + cliente
+docker compose ps
+
+# Usar el cliente desde su contenedor
+docker compose exec client dfsha register ana --password secreto123
+docker compose exec client dfsha login ana --password secreto123
+docker compose exec client sh -c 'dd if=/dev/urandom of=/datos/prueba.bin bs=1M count=12'
+docker compose exec client dfsha put /datos/prueba.bin /home/ana/prueba.bin
+docker compose exec client dfsha stat /home/ana/prueba.bin      # réplicas por bloque
+docker compose exec client dfsha get /home/ana/prueba.bin /datos/copia.bin
+docker compose exec client dfsha status
+
+# Probar la alta disponibilidad
+docker compose stop dn2
+docker compose logs -f cn1 | grep -E "MUERTO|Re-replicando"
+```
+
+### Nativo, sin Docker (desarrollo)
+
+```bash
+# Requisitos: Java 21, Maven, Python 3.11+
+pip install -r datanode/requirements.txt -r client/requirements.txt
+./scripts/gen_proto.sh                 # stubs de Python desde el .proto
+cd controlnode && mvn -q package -DskipTests && cd ..
+./scripts/run-local.sh 4               # ControlNode + 4 DataNodes en esta máquina
+
+export PYTHONPATH=$PWD/client DFSHA_CONTROLNODE_URL=http://localhost:8080
+python3 -m dfsha register ana --password secreto123
+python3 -m dfsha login ana --password secreto123
+python3 -m dfsha put ./archivo.bin /home/ana/archivo.bin
+python3 -m dfsha shell                 # shell interactivo con cd/ls/put/get
+./scripts/stop-local.sh
+```
+
+### Variables de entorno principales
+
+| Variable | Componente | Por defecto | Para qué |
+|---|---|---|---|
+| `DFSHA_BLOCK_SIZE` | ControlNode | 4194304 | Tamaño de bloque |
+| `DFSHA_REPLICATION` / `DFSHA_MIN_REPLICAS` | ControlNode | 3 / 2 | Réplicas deseadas y quórum de escritura |
+| `DFSHA_NODE_DEAD_MS` | ControlNode | 15000 | Cuándo se declara muerto un DataNode |
+| `DFSHA_JWT_SECRET` · `DFSHA_BLOCK_SECRET` | ControlNode y DataNode | valores de demo | Secretos compartidos (cambiar en despliegue) |
+| `DFSHA_NODE_ID` · `DFSHA_ZONE` · `DFSHA_DN_ADVERTISE` | DataNode | dn1 · zona-a · localhost:50051 | Identidad, zona y dirección anunciada |
+| `DFSHA_CONTROLNODE` | DataNode | localhost:9090 | gRPC del ControlNode |
+| `DFSHA_CONTROLNODE_URL` | Cliente | http://localhost:8080 | API REST del ControlNode |
+| `DFSHA_THREADS` | Cliente | 4 | Bloques transferidos en paralelo |
+
+## 8. Pruebas
+
+```bash
+python3 tests/e2e_test.py              # levanta el clúster, ejecuta 23 pruebas y lo apaga
+python3 tests/e2e_test.py --keep       # deja el clúster arriba para inspeccionarlo
+```
+
+Detalle de los casos y la última ejecución: [`docs/pruebas-hito2.md`](docs/pruebas-hito2.md).
+
+## 9. Documentación
+
+| Documento | Contenido |
+|---|---|
+| [`docs/comunicaciones.md`](docs/comunicaciones.md) | Especificación de comunicaciones del Hito 2: matriz de protocolos, mensajes, tiempos, reintentos, errores y flujos |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | API REST del ControlNode (OpenAPI 3) |
+| [`proto/dfsha.proto`](proto/dfsha.proto) | Servicios y mensajes gRPC |
+| [`docs/pruebas-hito2.md`](docs/pruebas-hito2.md) | Plan de pruebas y resultados |
+
+## 10. Cronograma
 
 | Semana | Hito |
 |---|---|
-| 1 | **Hito 1** — Especificación definitiva, contratos (`.proto` y OpenAPI), esqueleto del repositorio |
-| 2–3 | **Hito 2** — Arquitectura distribuida y comunicaciones: namespace, bloques, replicación en pipeline, lectura paralela, despliegue en AWS |
-| 4–5 | **Hito 3** — Alta disponibilidad (Raft), re-replicación, consistencia (versiones y locks) y seguridad (mTLS, ACL, 2FA, cifrado) |
-| 6 | **Hito 4** — Pruebas de rendimiento, informe técnico y video |
+| 1 | Hito 1 — Especificación definitiva, contratos y estructura del repositorio |
+| 2–3 | Hito 2 — Arquitectura distribuida y comunicaciones: namespace, bloques, replicación en pipeline, lectura paralela |
+| 4–5 | Hito 3 — Alta disponibilidad con Raft, consistencia y seguridad (mTLS, ACL, 2FA, cifrado) |
+| 6 | Hito 4 — Pruebas de rendimiento en AWS, informe técnico y video |

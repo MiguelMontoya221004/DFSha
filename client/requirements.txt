@@ -1,0 +1,5 @@
+grpcio>=1.60
+grpcio-tools>=1.60
+protobuf>=4.25
+requests>=2.31
+typer>=0.12

@@ -1,0 +1,122 @@
+# Clúster DFSha local: 1 ControlNode + 4 DataNodes en 3 "zonas" + contenedor cliente.
+#   cd deploy && docker compose up -d --build
+#   docker compose exec client dfsha register ana
+name: dfsha
+
+x-secrets: &secrets
+  # Secretos compartidos entre ControlNode y DataNodes (Hito 3: gestor de secretos + mTLS)
+  DFSHA_BLOCK_SECRET: ${DFSHA_BLOCK_SECRET:-dfsha-block-secret-demo}
+  DFSHA_JWT_SECRET: ${DFSHA_JWT_SECRET:-dfsha-jwt-secret-demo-0123456789}
+
+services:
+  cn1:
+    build:
+      context: ..
+      dockerfile: controlnode/Dockerfile
+    image: dfsha/controlnode:0.2.0
+    container_name: dfsha-cn1
+    environment:
+      <<: *secrets
+      DFSHA_NODE_ID: cn1
+      DFSHA_CLUSTER_ID: dfsha-docker
+      DFSHA_BLOCK_SIZE: 4194304
+      DFSHA_REPLICATION: 3
+      DFSHA_MIN_REPLICAS: 2
+      DFSHA_NODE_DEAD_MS: 15000
+      DFSHA_ADMIN_PASSWORD: admin123
+    ports:
+      - "8080:8080"     # API REST para clientes
+      - "9090:9090"     # gRPC NodeControl para DataNodes
+    networks: [dfsha]
+
+  dn1: &datanode
+    build:
+      context: ..
+      dockerfile: datanode/Dockerfile
+    image: dfsha/datanode:0.2.0
+    container_name: dfsha-dn1
+    depends_on:
+      cn1:
+        condition: service_healthy
+    environment:
+      <<: *secrets
+      DFSHA_NODE_ID: dn1
+      DFSHA_ZONE: zona-a
+      DFSHA_DN_PORT: 50051
+      DFSHA_DN_ADVERTISE: dn1:50051
+      DFSHA_CONTROLNODE: cn1:9090
+      DFSHA_CAPACITY_BYTES: 8589934592
+    volumes:
+      - dn1-data:/var/lib/dfsha/blocks
+    ports: ["50051:50051"]
+    networks: [dfsha]
+
+  dn2:
+    <<: *datanode
+    container_name: dfsha-dn2
+    environment:
+      <<: *secrets
+      DFSHA_NODE_ID: dn2
+      DFSHA_ZONE: zona-a
+      DFSHA_DN_PORT: 50051
+      DFSHA_DN_ADVERTISE: dn2:50051
+      DFSHA_CONTROLNODE: cn1:9090
+      DFSHA_CAPACITY_BYTES: 8589934592
+    volumes:
+      - dn2-data:/var/lib/dfsha/blocks
+    ports: ["50052:50051"]
+
+  dn3:
+    <<: *datanode
+    container_name: dfsha-dn3
+    environment:
+      <<: *secrets
+      DFSHA_NODE_ID: dn3
+      DFSHA_ZONE: zona-b
+      DFSHA_DN_PORT: 50051
+      DFSHA_DN_ADVERTISE: dn3:50051
+      DFSHA_CONTROLNODE: cn1:9090
+      DFSHA_CAPACITY_BYTES: 8589934592
+    volumes:
+      - dn3-data:/var/lib/dfsha/blocks
+    ports: ["50053:50051"]
+
+  dn4:
+    <<: *datanode
+    container_name: dfsha-dn4
+    environment:
+      <<: *secrets
+      DFSHA_NODE_ID: dn4
+      DFSHA_ZONE: zona-c
+      DFSHA_DN_PORT: 50051
+      DFSHA_DN_ADVERTISE: dn4:50051
+      DFSHA_CONTROLNODE: cn1:9090
+      DFSHA_CAPACITY_BYTES: 8589934592
+    volumes:
+      - dn4-data:/var/lib/dfsha/blocks
+    ports: ["50054:50051"]
+
+  client:
+    build:
+      context: ..
+      dockerfile: client/Dockerfile
+    image: dfsha/client:0.2.0
+    container_name: dfsha-client
+    depends_on: [cn1]
+    environment:
+      DFSHA_CONTROLNODE_URL: http://cn1:8080
+      DFSHA_SESSION: /root/.dfsha/session.json
+    command: ["-c", "sleep infinity"]
+    volumes:
+      - ./datos:/datos        # carpeta local para subir y bajar archivos
+    networks: [dfsha]
+
+networks:
+  dfsha:
+    driver: bridge
+
+volumes:
+  dn1-data:
+  dn2-data:
+  dn3-data:
+  dn4-data:
