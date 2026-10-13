@@ -1,0 +1,203 @@
+// =====================================================================
+// DFSha - Contrato gRPC entre el ControlNode y los DataNodes
+//
+// Lo implementa el ControlNode (servidor) y lo llama el DataNode (cliente).
+// Transporte: gRPC sobre mTLS con la CA del proyecto.
+//
+// Este archivo NO cubre la comunicacion Cliente <-> DataNode ni la de
+// DataNode <-> DataNode (el pipeline de replicacion): esos son contratos del
+// equipo de DataNodes y van en su propio .proto.
+//
+// Hoy el ControlNode expone estos mismos mensajes como REST en /datanodes/*
+// (mismos nombres de campo) para poder probar mientras se implementa el gRPC:
+//
+//   Register      -> POST /datanodes/register
+//   Heartbeat     -> POST /datanodes/heartbeat
+//   BlockReceived -> POST /datanodes/block-received
+//   BlockReport   -> (todavia sin equivalente REST)
+//   BlockRemoved  -> (todavia sin equivalente REST)
+// =====================================================================
+
+syntax = "proto3";
+
+package dfsha;
+
+option java_package = "dfsha.grpc";
+option java_multiple_files = true;
+
+// ---------------------------------------------------------------------
+// DOS DECISIONES DE DISENO QUE HAY QUE TENER PRESENTES
+//
+// 1. El DataNode se registra y manda el heartbeat a LOS TRES ControlNodes,
+//    no solo al lider (igual que los DataNodes de HDFS en HA). Asi cualquiera
+//    de los tres sabe quien esta vivo y puede responderle al cliente sin
+//    preguntarle al lider. Solo el lider devuelve comandos; los seguidores
+//    contestan is_leader = false y la lista vacia.
+//
+// 2. Los comandos viajan en la RESPUESTA del heartbeat; el ControlNode nunca
+//    abre una conexion hacia el DataNode. Esto evita problemas de NAT y de
+//    security groups en AWS, y es como lo hace HDFS.
+// ---------------------------------------------------------------------
+service ControlService {
+
+  // Al arrancar el DataNode, y cada vez que un ControlNode conteste
+  // reregister = true (porque se reinicio y no lo conoce).
+  rpc Register(RegisterRequest) returns (RegisterReply);
+
+  // Cada 3 segundos, a los tres ControlNodes.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatReply);
+
+  // Que bloques tiene realmente el nodo. Se manda despues del Register y
+  // luego cada ~5 minutos. Sirve para que el ControlNode detecte bloques
+  // perdidos (estan en los metadatos pero no en el disco) o de mas.
+  rpc BlockReport(BlockReportRequest) returns (Ack);
+
+  // El DataNode ya tiene un bloque nuevo: o se lo acaba de mandar el cliente,
+  // o lo acaba de copiar de otro DataNode por una re-replicacion.
+  // El ControlNode recien aqui escribe la replica en Raft.
+  rpc BlockReceived(BlockReceivedRequest) returns (Ack);
+
+  // El DataNode perdio un bloque: checksum malo, disco dañado o lo borro
+  // porque se lo pidieron.
+  rpc BlockRemoved(BlockRemovedRequest) returns (Ack);
+}
+
+// ============================= registro ==============================
+
+message RegisterRequest {
+  // Id estable del DataNode; tiene que sobrevivir a los reinicios porque es
+  // con el que quedan guardadas las replicas en los metadatos. Ej: "dn-a1".
+  string node_id        = 1;
+  // Host o IP con el que lo alcanzan el cliente y los otros DataNodes.
+  string host           = 2;
+  // Puerto donde el DataNode atiende al CLIENTE (subir y bajar bloques).
+  int32  client_port    = 3;
+  // Puerto gRPC donde atiende a los OTROS DATANODES (pipeline de replicacion).
+  int32  peer_port      = 4;
+  // Zona de disponibilidad. El ControlNode nunca pone dos replicas del mismo
+  // bloque en la misma zona (RNF4).
+  string zone           = 5;
+  int64  capacity_bytes = 6;
+  int64  used_bytes     = 7;
+  // Version del software del DataNode, solo para diagnostico.
+  string version        = 8;
+}
+
+message RegisterReply {
+  bool   accepted           = 1;
+  string cluster_id         = 2;
+  // Cada cuanto mandar el heartbeat. Hoy: 3 s.
+  int32  heartbeat_seconds  = 3;
+  // Tamaño de bloque del sistema. Hoy: 4 MiB.
+  int64  block_size_bytes   = 4;
+  // Replicas por bloque. Hoy: 3.
+  int32  replication_factor = 5;
+  // Los tres ControlNodes. Mandeles el heartbeat a todos (ver nota 1).
+  repeated string controlnodes = 6;
+  // Texto para el log cuando accepted = false.
+  string message            = 7;
+}
+
+// ============================= heartbeat =============================
+
+message HeartbeatRequest {
+  string node_id          = 1;
+  int64  capacity_bytes   = 2;
+  int64  used_bytes       = 3;
+  // Cuantos bloques tiene guardados ahora mismo.
+  int32  block_count      = 4;
+  // Transferencias en curso. El ControlNode lo usa para mandar al cliente a
+  // la replica menos cargada (RNF5).
+  int32  active_transfers = 5;
+}
+
+message HeartbeatReply {
+  // false = este ControlNode es seguidor. Igual anota que usted esta vivo,
+  // pero no le va a mandar comandos.
+  bool is_leader  = 1;
+  // true = el ControlNode no lo tiene registrado (se reinicio). Llame a
+  // Register otra vez.
+  bool reregister = 2;
+  // Lo que el lider necesita que haga. Normalmente va vacio.
+  repeated Command commands = 3;
+}
+
+// ====================== comandos del ControlNode =====================
+
+message Command {
+  oneof command {
+    ReplicateBlock replicate = 1;
+    DeleteBlock    remove    = 2;
+  }
+}
+
+// "Copie este bloque que usted tiene a estos otros nodos."
+// Se manda cuando un bloque quedo con menos replicas vivas de las que debe
+// tener, porque se cayo un DataNode. Al terminar, el DESTINO llama a
+// BlockReceived (no el origen).
+message ReplicateBlock {
+  string   block_id = 1;
+  repeated Target targets = 2;
+}
+
+message Target {
+  string node_id   = 1;
+  string host      = 2;
+  // Puerto gRPC de nodo a nodo (el peer_port del Register).
+  int32  peer_port = 3;
+}
+
+// "Borre estos bloques." Se manda cuando se borro el archivo, cuando una
+// version vieja ya no se necesita, o cuando quedaron replicas de mas porque
+// un DataNode volvio despues de que el bloque ya se re-replico.
+message DeleteBlock {
+  repeated string block_ids = 1;
+}
+
+// ============================== reportes =============================
+
+message BlockReportRequest {
+  string node_id = 1;
+  // true  = esta es la lista COMPLETA de lo que tengo (el ControlNode puede
+  //         concluir que lo que no aparezca, se perdio).
+  // false = solo lo que cambio desde el ultimo reporte.
+  bool   full    = 2;
+  repeated BlockInfo blocks = 3;
+}
+
+message BlockInfo {
+  string block_id = 1;
+  int64  size     = 2;
+  // SHA-256 en hexadecimal del bloque CIFRADO, que es lo que el DataNode
+  // tiene en disco (el cifrado AES-256-GCM lo hace el cliente, los DataNodes
+  // nunca ven los datos en claro).
+  string sha256   = 3;
+}
+
+message BlockReceivedRequest {
+  string block_id = 1;
+  // Quien lo recibio (el que hace la llamada).
+  string node_id  = 2;
+  int64  size     = 3;
+  string sha256   = 4;
+}
+
+message BlockRemovedRequest {
+  string block_id = 1;
+  string node_id  = 2;
+  Reason reason   = 3;
+
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    CHECKSUM_INVALIDO  = 1;  // el bloque esta corrupto
+    BORRADO            = 2;  // se borro porque el ControlNode lo pidio
+    DISCO_DANADO       = 3;  // error de lectura o escritura en el disco
+  }
+}
+
+// ================================ comun ==============================
+
+message Ack {
+  bool   ok      = 1;
+  string message = 2;
+}
