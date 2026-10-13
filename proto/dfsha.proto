@@ -1,5 +1,5 @@
-// DFSha — contrato gRPC compartido entre Cliente (Python), DataNode (Python) y ControlNode (Java).
-// Hito 2 · ST0263 / SI3007 2026-2
+// DFSha — contrato gRPC del plano de control: DataNode (Python) <-> ControlNode (Java).
+// Hito 2 · ST0263 / SI3007 2026-2 · v0.3.0
 syntax = "proto3";
 
 package dfsha.v1;
@@ -8,64 +8,10 @@ option java_package = "io.dfsha.proto";
 option java_multiple_files = true;
 
 // ===========================================================================
-// DataTransfer — plano de datos.
-//   Cliente  -> DataNode : WriteBlock / ReadBlock
-//   DataNode -> DataNode : WriteBlock (pipeline de replicación y re-replicación)
+// El plano de datos (bloques) ya NO va por gRPC: el DataNode expone una API
+// HTTP y el cliente la consume con `requests`. El contrato está en
+// docs/api-datanode.md. Este archivo describe solo el plano de control.
 // ===========================================================================
-service DataTransfer {
-  // Escribe un bloque. El primer mensaje del stream debe ser el header y los
-  // siguientes los chunks de datos. El DataNode reenvía el mismo stream al
-  // siguiente nodo del pipeline mientras escribe en disco.
-  rpc WriteBlock (stream WriteBlockRequest) returns (WriteBlockResponse);
-
-  // Lee un bloque (o un rango) como stream de chunks.
-  rpc ReadBlock (ReadBlockRequest) returns (stream BlockChunk);
-
-  // Estado del DataNode (usado por el cliente para elegir réplica y por pruebas).
-  rpc NodeStatus (NodeStatusRequest) returns (NodeStatusResponse);
-}
-
-message WriteBlockRequest {
-  oneof payload {
-    BlockHeader header = 1;  // primer mensaje
-    bytes chunk = 2;         // siguientes mensajes (<= 1 MiB cada uno)
-  }
-}
-
-message BlockHeader {
-  string block_id = 1;              // identificador global del bloque
-  string block_token = 2;           // token firmado por el ControlNode (HMAC-SHA256)
-  repeated string pipeline = 3;     // DataNodes siguientes: "host:puerto"
-  int64 size = 4;                   // tamaño total esperado en bytes
-  string sha256 = 5;                // checksum del contenido
-  string client_id = 6;             // quién origina la escritura (auditoría)
-}
-
-message WriteBlockResponse {
-  bool ok = 1;
-  repeated string stored_on = 2;    // node_id de los DataNodes que confirmaron
-  string error = 3;
-}
-
-message ReadBlockRequest {
-  string block_id = 1;
-  string block_token = 2;
-  int64 offset = 3;
-  int64 length = 4;                 // 0 = hasta el final del bloque
-}
-
-message BlockChunk { bytes data = 1; }
-
-message NodeStatusRequest {}
-
-message NodeStatusResponse {
-  string node_id = 1;
-  string zone = 2;
-  int64 capacity_bytes = 3;
-  int64 used_bytes = 4;
-  int32 block_count = 5;
-  int32 active_transfers = 6;
-}
 
 // ===========================================================================
 // NodeControl — plano de control.

@@ -48,14 +48,16 @@ Almacenar archivos grandes en un solo servidor limita la capacidad, el rendimien
 | Comunicación | Protocolo | Puerto | Seguridad | Estado |
 |---|---|---|---|---|
 | Cliente ↔ ControlNode | REST sobre HTTP/HTTPS (JSON) | 8080 | JWT + ACL · TLS en el Hito 3 | implementado |
-| Cliente ↔ DataNode | gRPC streaming | 50051 | Token de bloque HMAC · TLS en el Hito 3 | implementado |
+| Cliente ↔ DataNode | HTTP (`PUT`/`GET` de bloques) | 50051 | Token de bloque HMAC · TLS en el Hito 3 | implementado |
 | ControlNode ↔ DataNode | gRPC (registro, heartbeats, comandos) | 9090 | mTLS en el Hito 3 | implementado |
-| DataNode ↔ DataNode | gRPC streaming (pipeline y re-replicación) | 50051 | Token de bloque · mTLS en el Hito 3 | implementado |
+| DataNode ↔ DataNode | HTTP (pipeline y re-replicación) | 50051 | Token de bloque · mTLS en el Hito 3 | implementado |
 | ControlNode ↔ ControlNode | Raft (Apache Ratis sobre gRPC) | 9500 | mTLS | Hito 3 |
 
 Detalle completo de mensajes, tiempos, reintentos y códigos de error:
 [`docs/comunicaciones.md`](docs/comunicaciones.md) · contratos en
-[`proto/dfsha.proto`](proto/dfsha.proto) y [`docs/openapi.yaml`](docs/openapi.yaml).
+[`docs/api-datanode.md`](docs/api-datanode.md) (bloques),
+[`docs/openapi.yaml`](docs/openapi.yaml) (metadatos) y
+[`proto/dfsha.proto`](proto/dfsha.proto) (plano de control).
 
 ## 3. Requerimientos funcionales
 
@@ -91,12 +93,12 @@ Cada nodo expone una API: REST (OpenAPI) en el ControlNode y gRPC (`proto/dfsha.
 | Hito 3 | Raft (3 ControlNodes), TLS/mTLS, 2FA, API keys, cifrado en reposo | pendiente |
 | Hito 4 | Pruebas de rendimiento en AWS, informe y video | pendiente |
 
-Lo que ya funciona (Hito 2), verificado por `tests/e2e_test.py` (23 pruebas, todas en verde):
+Lo que ya funciona (Hito 2), verificado por `tests/e2e_datanode.py` (19 pruebas, todas en verde):
 
 - Espacio de nombres jerárquico multiusuario con ACL: `ls`, `cd`, `pwd`, `mkdir -p`, `rm -r`, `mv`, `stat`.
 - Particionamiento en bloques de 4 MiB con **3 réplicas en zonas distintas**, colocadas con *power of two choices* según carga y espacio libre.
 - Escritura con **pipeline de replicación** (el cliente sube los datos una sola vez) y **quórum de 2 de 3** para publicar la versión.
-- Lectura **paralela** (4 hilos) con **failover** entre réplicas y verificación SHA-256 de cada bloque.
+- Lectura con **failover** entre réplicas, lectura por rangos (`offset`/`length` o `Range`) y verificación SHA-256 de cada bloque.
 - Versiones inmutables con publicación atómica y **copy-on-write** en escrituras parciales.
 - **Un solo escritor por archivo** mediante lease con expiración.
 - **Heartbeats, detección de nodos muertos y re-replicación P2P** automática.
@@ -115,19 +117,21 @@ DFSha/
 │       ├── model/             INode, FileVersion, BlockMeta, DataNodeInfo, Lease, User
 │       ├── security/          JWT, tokens de bloque, filtro de autenticación
 │       └── service/           namespace, archivos, usuarios y BlockManager
-├── datanode/dfsha_datanode/   DataNode · Python + gRPC
-│   ├── service.py             WriteBlock con pipeline y ReadBlock en streaming
+├── datanode/                  DataNode · Python + FastAPI (bloques) + gRPC (control)
+│   ├── main.py                arranque: API HTTP + hilo de heartbeats
+│   ├── server.py              PUT/GET de bloques, pipeline de replicación, rangos
 │   ├── storage.py             bloques en disco con escritura atómica y checksums
-│   ├── controlnode.py         registro, heartbeats, reportes y ejecución de comandos
-│   └── tokens.py              verificación de tokens de bloque
-├── client/dfsha/              Cliente · SDK y CLI en Python (Typer)
-│   ├── client.py              SDK: REST + transferencia paralela de bloques
-│   ├── cli.py                 comandos: login, ls, put, get, stat, write, status, shell
+│   ├── control_node.py        registro, heartbeats, reportes y ejecución de comandos
+│   ├── tokens.py              verificación de tokens de bloque
+│   └── config.py              configuración por variables de entorno
+├── client/                    Cliente · Python (`requests` + `typer`)
+│   ├── dfs_client.py          llamadas al ControlNode y a los DataNodes
+│   ├── main.py                comandos de la CLI
 │   └── session.py             sesión local (token y directorio de trabajo)
 ├── deploy/docker-compose.yml  clúster local: 1 ControlNode + 4 DataNodes + cliente
 ├── scripts/                   gen_proto.sh · run-local.sh · stop-local.sh
-├── tests/e2e_test.py          suite end-to-end (funcional, fallos y seguridad)
-└── docs/                      comunicaciones.md · openapi.yaml · pruebas-hito2.md
+├── tests/e2e_datanode.py      suite end-to-end (funcional, fallos y seguridad)
+└── docs/                      comunicaciones.md · api-datanode.md · openapi.yaml
 ```
 
 ## 7. Cómo ejecutarlo
@@ -139,14 +143,9 @@ cd deploy
 docker compose up -d --build           # 1 ControlNode + 4 DataNodes + cliente
 docker compose ps
 
-# Usar el cliente desde su contenedor
-docker compose exec client dfsha register ana --password secreto123
-docker compose exec client dfsha login ana --password secreto123
-docker compose exec client sh -c 'dd if=/dev/urandom of=/datos/prueba.bin bs=1M count=12'
-docker compose exec client dfsha put /datos/prueba.bin /home/ana/prueba.bin
-docker compose exec client dfsha stat /home/ana/prueba.bin      # réplicas por bloque
-docker compose exec client dfsha get /home/ana/prueba.bin /datos/copia.bin
-docker compose exec client dfsha status
+# Comprobar que el clúster responde
+curl -s localhost:8080/api/v1/health          # ControlNode
+curl -s localhost:50051/status                # DataNode dn1
 
 # Probar la alta disponibilidad
 docker compose stop dn2
@@ -162,11 +161,8 @@ pip install -r datanode/requirements.txt -r client/requirements.txt
 cd controlnode && mvn -q package -DskipTests && cd ..
 ./scripts/run-local.sh 4               # ControlNode + 4 DataNodes en esta máquina
 
-export PYTHONPATH=$PWD/client DFSHA_CONTROLNODE_URL=http://localhost:8080
-python3 -m dfsha register ana --password secreto123
-python3 -m dfsha login ana --password secreto123
-python3 -m dfsha put ./archivo.bin /home/ana/archivo.bin
-python3 -m dfsha shell                 # shell interactivo con cd/ls/put/get
+python3 tests/e2e_datanode.py          # levanta su propio clúster y lo prueba
+curl -s localhost:50051/status         # estado de un DataNode
 ./scripts/stop-local.sh
 ```
 
@@ -181,24 +177,25 @@ python3 -m dfsha shell                 # shell interactivo con cd/ls/put/get
 | `DFSHA_NODE_ID` · `DFSHA_ZONE` · `DFSHA_DN_ADVERTISE` | DataNode | dn1 · zona-a · localhost:50051 | Identidad, zona y dirección anunciada |
 | `DFSHA_CONTROLNODE` | DataNode | localhost:9090 | gRPC del ControlNode |
 | `DFSHA_CONTROLNODE_URL` | Cliente | http://localhost:8080 | API REST del ControlNode |
-| `DFSHA_THREADS` | Cliente | 4 | Bloques transferidos en paralelo |
 
 ## 8. Pruebas
 
 ```bash
-python3 tests/e2e_test.py              # levanta el clúster, ejecuta 23 pruebas y lo apaga
-python3 tests/e2e_test.py --keep       # deja el clúster arriba para inspeccionarlo
+python3 tests/e2e_datanode.py          # levanta el clúster, ejecuta 19 pruebas y lo apaga
+python3 tests/e2e_datanode.py --keep   # deja el clúster arriba para inspeccionarlo
 ```
 
-Detalle de los casos y la última ejecución: [`docs/pruebas-hito2.md`](docs/pruebas-hito2.md).
+La suite usa solo HTTP, igual que el cliente: sirve además de referencia de cómo llamar a
+la API. Detalle de los casos: [`docs/pruebas-hito2.md`](docs/pruebas-hito2.md).
 
 ## 9. Documentación
 
 | Documento | Contenido |
 |---|---|
 | [`docs/comunicaciones.md`](docs/comunicaciones.md) | Especificación de comunicaciones del Hito 2: matriz de protocolos, mensajes, tiempos, reintentos, errores y flujos |
+| [`docs/api-datanode.md`](docs/api-datanode.md) | API HTTP del DataNode: subir, bajar y leer por rangos un bloque, con ejemplos en `requests` |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | API REST del ControlNode (OpenAPI 3) |
-| [`proto/dfsha.proto`](proto/dfsha.proto) | Servicios y mensajes gRPC |
+| [`proto/dfsha.proto`](proto/dfsha.proto) | Servicios y mensajes gRPC del plano de control |
 | [`docs/pruebas-hito2.md`](docs/pruebas-hito2.md) | Plan de pruebas y resultados |
 
 ## 10. Cronograma

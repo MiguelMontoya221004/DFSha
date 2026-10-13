@@ -1,6 +1,6 @@
-# Clúster DFSha local: 1 ControlNode + 4 DataNodes en 3 "zonas" + contenedor cliente.
+# Clúster DFSha local: 1 ControlNode + 4 DataNodes en 3 "zonas".
 #   cd deploy && docker compose up -d --build
-#   docker compose exec client dfsha register ana
+#   curl http://localhost:50051/status
 name: dfsha
 
 x-secrets: &secrets
@@ -33,7 +33,7 @@ services:
     build:
       context: ..
       dockerfile: datanode/Dockerfile
-    image: dfsha/datanode:0.2.0
+    image: dfsha/datanode:0.3.0
     container_name: dfsha-dn1
     depends_on:
       cn1:
@@ -48,7 +48,7 @@ services:
       DFSHA_CAPACITY_BYTES: 8589934592
     volumes:
       - dn1-data:/var/lib/dfsha/blocks
-    ports: ["50051:50051"]
+    ports: ["50051:50051"]   # API HTTP de bloques
     networks: [dfsha]
 
   dn2:
@@ -96,20 +96,9 @@ services:
       - dn4-data:/var/lib/dfsha/blocks
     ports: ["50054:50051"]
 
-  client:
-    build:
-      context: ..
-      dockerfile: client/Dockerfile
-    image: dfsha/client:0.2.0
-    container_name: dfsha-client
-    depends_on: [cn1]
-    environment:
-      DFSHA_CONTROLNODE_URL: http://cn1:8080
-      DFSHA_SESSION: /root/.dfsha/session.json
-    command: ["-c", "sleep infinity"]
-    volumes:
-      - ./datos:/datos        # carpeta local para subir y bajar archivos
-    networks: [dfsha]
+  # El servicio del cliente vuelve aqui cuando la rama Cliente tenga su
+  # Dockerfile. Mientras tanto se ejecuta desde la maquina:
+  #   DFSHA_CONTROLNODE_URL=http://localhost:8080 python3 client/main.py
 
 networks:
   dfsha:

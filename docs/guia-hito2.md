@@ -2,6 +2,12 @@
 
 ST0263 / SI3007 · 2026-2 · Semanas 2-3 · 64 archivos · 6.211 líneas
 
+> **Actualización v0.3.0.** El plano de datos pasó de gRPC a **HTTP**: el DataNode se
+> reescribió con FastAPI (`datanode/main.py`, `server.py`, `storage.py`, `control_node.py`,
+> `tokens.py`, `config.py`) para que el cliente nuevo funcione solo con `requests`. El
+> plano de control (ControlNode ↔ DataNode) sigue en gRPC. Contrato de bloques en
+> [`api-datanode.md`](api-datanode.md); la suite ahora es `tests/e2e_datanode.py`.
+
 El cronograma pide para este hito: **«Diseño e implementación de arquitectura distribuida para
 opción 1 / opción 2, especificación de comunicaciones»**. Este documento explica, archivo por
 archivo, qué hace cada pieza y a cuál de esas tres cosas responde.

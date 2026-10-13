@@ -30,13 +30,12 @@ for i in $(seq 1 "$DATANODES"); do
   DFSHA_ZONE="${ZONES[$(( (i-1) % ${#ZONES[@]} ))]}" \
   DFSHA_DATA_DIR="$RUN_DIR/dn$i" \
   DFSHA_CONTROLNODE="localhost:9090" \
-  PYTHONPATH="$ROOT/datanode" \
-  python3 -m dfsha_datanode > "$RUN_DIR/dn$i.log" 2>&1 &
+  python3 "$ROOT/datanode/main.py" > "$RUN_DIR/dn$i.log" 2>&1 &
   echo $! > "$RUN_DIR/dn$i.pid"
-  echo "DataNode dn$i: gRPC localhost:$port · zona ${ZONES[$(( (i-1) % ${#ZONES[@]} ))]}"
+  echo "DataNode dn$i: HTTP http://localhost:$port · zona ${ZONES[$(( (i-1) % ${#ZONES[@]} ))]}"
 done
 
 echo
 echo "Logs en $RUN_DIR · para detener todo: ./scripts/stop-local.sh"
-echo "Cliente:  export PYTHONPATH=$ROOT/client DFSHA_CONTROLNODE_URL=http://localhost:8080"
-echo "          python3 -m dfsha register ana && python3 -m dfsha login ana"
+echo "Prueba:   python3 tests/e2e_datanode.py   (levanta su propio cluster)"
+echo "API de un DataNode: curl http://localhost:50051/status"

@@ -25,186 +25,14 @@ if _version_not_supported:
     )
 
 
-class DataTransferStub:
-    """===========================================================================
-    DataTransfer — plano de datos.
-    Cliente  -> DataNode : WriteBlock / ReadBlock
-    DataNode -> DataNode : WriteBlock (pipeline de replicación y re-replicación)
-    ===========================================================================
-    """
-
-    def __init__(self, channel):
-        """Constructor.
-
-        Args:
-            channel: A grpc.Channel.
-        """
-        self.WriteBlock = channel.stream_unary(
-                '/dfsha.v1.DataTransfer/WriteBlock',
-                request_serializer=dfsha__pb2.WriteBlockRequest.SerializeToString,
-                response_deserializer=dfsha__pb2.WriteBlockResponse.FromString,
-                _registered_method=True)
-        self.ReadBlock = channel.unary_stream(
-                '/dfsha.v1.DataTransfer/ReadBlock',
-                request_serializer=dfsha__pb2.ReadBlockRequest.SerializeToString,
-                response_deserializer=dfsha__pb2.BlockChunk.FromString,
-                _registered_method=True)
-        self.NodeStatus = channel.unary_unary(
-                '/dfsha.v1.DataTransfer/NodeStatus',
-                request_serializer=dfsha__pb2.NodeStatusRequest.SerializeToString,
-                response_deserializer=dfsha__pb2.NodeStatusResponse.FromString,
-                _registered_method=True)
-
-
-class DataTransferServicer:
-    """===========================================================================
-    DataTransfer — plano de datos.
-    Cliente  -> DataNode : WriteBlock / ReadBlock
-    DataNode -> DataNode : WriteBlock (pipeline de replicación y re-replicación)
-    ===========================================================================
-    """
-
-    def WriteBlock(self, request_iterator, context):
-        """Escribe un bloque. El primer mensaje del stream debe ser el header y los
-        siguientes los chunks de datos. El DataNode reenvía el mismo stream al
-        siguiente nodo del pipeline mientras escribe en disco.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ReadBlock(self, request, context):
-        """Lee un bloque (o un rango) como stream de chunks.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def NodeStatus(self, request, context):
-        """Estado del DataNode (usado por el cliente para elegir réplica y por pruebas).
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-
-def add_DataTransferServicer_to_server(servicer, server):
-    rpc_method_handlers = {
-            'WriteBlock': grpc.stream_unary_rpc_method_handler(
-                    servicer.WriteBlock,
-                    request_deserializer=dfsha__pb2.WriteBlockRequest.FromString,
-                    response_serializer=dfsha__pb2.WriteBlockResponse.SerializeToString,
-            ),
-            'ReadBlock': grpc.unary_stream_rpc_method_handler(
-                    servicer.ReadBlock,
-                    request_deserializer=dfsha__pb2.ReadBlockRequest.FromString,
-                    response_serializer=dfsha__pb2.BlockChunk.SerializeToString,
-            ),
-            'NodeStatus': grpc.unary_unary_rpc_method_handler(
-                    servicer.NodeStatus,
-                    request_deserializer=dfsha__pb2.NodeStatusRequest.FromString,
-                    response_serializer=dfsha__pb2.NodeStatusResponse.SerializeToString,
-            ),
-    }
-    generic_handler = grpc.method_handlers_generic_handler(
-            'dfsha.v1.DataTransfer', rpc_method_handlers)
-    server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dfsha.v1.DataTransfer', rpc_method_handlers)
-
-
- # This class is part of an EXPERIMENTAL API.
-class DataTransfer:
-    """===========================================================================
-    DataTransfer — plano de datos.
-    Cliente  -> DataNode : WriteBlock / ReadBlock
-    DataNode -> DataNode : WriteBlock (pipeline de replicación y re-replicación)
-    ===========================================================================
-    """
-
-    @staticmethod
-    def WriteBlock(request_iterator,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_unary(
-            request_iterator,
-            target,
-            '/dfsha.v1.DataTransfer/WriteBlock',
-            dfsha__pb2.WriteBlockRequest.SerializeToString,
-            dfsha__pb2.WriteBlockResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ReadBlock(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/dfsha.v1.DataTransfer/ReadBlock',
-            dfsha__pb2.ReadBlockRequest.SerializeToString,
-            dfsha__pb2.BlockChunk.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def NodeStatus(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/dfsha.v1.DataTransfer/NodeStatus',
-            dfsha__pb2.NodeStatusRequest.SerializeToString,
-            dfsha__pb2.NodeStatusResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-
 class NodeControlStub:
     """===========================================================================
+    El plano de datos (bloques) ya NO va por gRPC: el DataNode expone una API
+    HTTP y el cliente la consume con `requests`. El contrato está en
+    docs/api-datanode.md. Este archivo describe solo el plano de control.
+    ===========================================================================
+
+    ===========================================================================
     NodeControl — plano de control.
     DataNode -> ControlNode : registro, heartbeats, reportes de bloques
     ControlNode -> DataNode : comandos dentro de la respuesta del heartbeat
@@ -246,6 +74,12 @@ class NodeControlStub:
 
 class NodeControlServicer:
     """===========================================================================
+    El plano de datos (bloques) ya NO va por gRPC: el DataNode expone una API
+    HTTP y el cliente la consume con `requests`. El contrato está en
+    docs/api-datanode.md. Este archivo describe solo el plano de control.
+    ===========================================================================
+
+    ===========================================================================
     NodeControl — plano de control.
     DataNode -> ControlNode : registro, heartbeats, reportes de bloques
     ControlNode -> DataNode : comandos dentro de la respuesta del heartbeat
@@ -320,6 +154,12 @@ def add_NodeControlServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class NodeControl:
     """===========================================================================
+    El plano de datos (bloques) ya NO va por gRPC: el DataNode expone una API
+    HTTP y el cliente la consume con `requests`. El contrato está en
+    docs/api-datanode.md. Este archivo describe solo el plano de control.
+    ===========================================================================
+
+    ===========================================================================
     NodeControl — plano de control.
     DataNode -> ControlNode : registro, heartbeats, reportes de bloques
     ControlNode -> DataNode : comandos dentro de la respuesta del heartbeat
