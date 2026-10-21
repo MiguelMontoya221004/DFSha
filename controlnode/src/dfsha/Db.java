@@ -268,7 +268,10 @@ public class Db {
             jdbc.update("INSERT INTO blocks (block_id, path, version, idx, size, checksum) VALUES (?,?,?,?,?,?)",
                     str(b, "block_id"), path, version, (int) lng(b, "index"), lng(b, "size"), str(b, "checksum"));
             for (String nodo : (List<String>) b.get("nodes")) {
-                jdbc.update("INSERT INTO replicas (block_id, node_id) VALUES (?,?)", str(b, "block_id"), nodo);
+                // MERGE y no INSERT: el DataNode ya pudo haber avisado esta misma
+                // replica con BlockReceived antes de que llegara el commit
+                jdbc.update("MERGE INTO replicas (block_id, node_id) KEY(block_id, node_id) VALUES (?,?)",
+                        str(b, "block_id"), nodo);
             }
             size += lng(b, "size");
         }
