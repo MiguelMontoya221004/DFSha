@@ -103,3 +103,56 @@ class DFSClient:
             return True, f"Éxito: Archivo reconstruido localmente como '{nombre_salida}'."
         except Exception as e:
             return False, f"Error al reconstruir el archivo: {str(e)}"
+def cambiar_directorio(self, nueva_ruta):
+    """Comando cd: Solicita cambiar la ruta actual."""
+    if not self.session.token: return False, "Acceso denegado: Inicia sesión."
+    
+    url = f"{self.base_url}/fs/cd"
+    # Enviamos dónde estamos y a dónde queremos ir
+    payload = {"cwd": self.session.cwd, "path": nueva_ruta}
+    
+    try:
+        response = requests.post(url, json=payload, headers=self._get_headers())
+        if response.status_code == 200:
+            data = response.json()
+            # Actualizamos la memoria con la ruta que el servidor validó
+            self.session.cwd = data.get("new_path", nueva_ruta)
+            self.session.save()
+            return True, f"Directorio actual: {self.session.cwd}"
+        else:
+            return False, f"Error: No se encontró la ruta '{nueva_ruta}'"
+    except requests.ConnectionError:
+        return False, "Error de red con el ControlNode."
+
+def crear_directorio(self, nombre_carpeta):
+    """Comando mkdir: Crea un directorio en el sistema."""
+    if not self.session.token: return False, "Acceso denegado."
+    
+    url = f"{self.base_url}/fs/mkdir"
+    payload = {"cwd": self.session.cwd, "name": nombre_carpeta}
+    
+    try:
+        response = requests.post(url, json=payload, headers=self._get_headers())
+        if response.status_code == 200 or response.status_code == 201:
+            return True, f"Carpeta '{nombre_carpeta}' creada en {self.session.cwd}"
+        else:
+            return False, f"Error al crear carpeta: código {response.status_code}"
+    except requests.ConnectionError:
+        return False, "Error de red con el ControlNode."
+
+def eliminar(self, nombre):
+    """Comando rm: Elimina un archivo o directorio."""
+    if not self.session.token: return False, "Acceso denegado."
+    
+    url = f"{self.base_url}/fs/rm"
+    payload = {"cwd": self.session.cwd, "name": nombre}
+    
+    try:
+        # Usamos requests.delete porque la acción es destructiva (Estándar REST)
+        response = requests.delete(url, json=payload, headers=self._get_headers())
+        if response.status_code == 200:
+            return True, f"'{nombre}' eliminado exitosamente."
+        else:
+            return False, f"Error al eliminar: código {response.status_code}"
+    except requests.ConnectionError:
+        return False, "Error de red con el ControlNode."
