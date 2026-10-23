@@ -112,7 +112,50 @@ class DFSClient:
             return False, f"No se pudo crear la carpeta: {response.text}"
         except requests.ConnectionError:
             return False, "Error de red con el ControlNode."
+    def cambiar_directorio(self, ruta):
+        """
+        Comando cd: Solicita cambiar la ruta actual en la sesión.
+        Valida con el ControlNode si la ruta destino existe.
+        """
+        if not self.session.token:
+            return False, "Acceso denegado: Debes iniciar sesión primero."
 
+        url = f"{self.base_url}/fs/cd"
+        # Usamos la nueva función de tu amigo para siempre enviar la ruta absoluta
+        payload = {"path": self._ruta_absoluta(ruta)}
+
+        try:
+            response = requests.post(url, json=payload, headers=self._get_headers())
+            if response.status_code == 200:
+                data = response.json()
+                # Actualizamos la memoria con la ruta que el servidor validó
+                self.session.cwd = data.get("new_path", payload["path"])
+                self.session.save()
+                return True, f"Directorio actual: {self.session.cwd}"
+            else:
+                return False, f"Error: No se encontró la ruta '{ruta}'"
+        except requests.ConnectionError:
+            return False, "Error de red con el ControlNode."
+
+    def eliminar(self, ruta):
+        """
+        Comando rm: Elimina un archivo o directorio.
+        Hace una petición DELETE al ControlNode.
+        """
+        if not self.session.token:
+            return False, "Acceso denegado: Debes iniciar sesión primero."
+
+        url = f"{self.base_url}/fs/rm"
+        payload = {"path": self._ruta_absoluta(ruta)}
+
+        try:
+            response = requests.delete(url, json=payload, headers=self._get_headers())
+            if response.status_code == 200:
+                return True, f"Eliminado exitosamente: {ruta}"
+            else:
+                return False, f"Error al eliminar: {response.text}"
+        except requests.ConnectionError:
+            return False, "Error de red con el ControlNode."
     # =====================================================================
     # SUBIR UN ARCHIVO
     #
