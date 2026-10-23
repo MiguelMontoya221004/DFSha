@@ -201,3 +201,24 @@ message Ack {
   bool   ok      = 1;
   string message = 2;
 }
+
+// =================================================================
+// SERVICIO DATANODE: Comunicación exclusiva entre pares (DataNodes)
+// =================================================================
+service DataNodeService {
+  // Transfiere un bloque a la siguiente réplica en el pipeline
+  rpc TransferBlock (TransferRequest) returns (TransferResponse);
+}
+
+message TransferRequest {
+  string block_id = 1;
+  string token = 2;              // El token firmado (antes X-Block-Token)
+  string checksum = 3;           // El hash SHA-256 (antes X-Block-Sha256)
+  repeated string pipeline = 4;  // Lista de IPs restantes en el pipeline (antes X-Pipeline)
+  bytes data = 5;                // Los bytes crudos del archivo (pedazo de 4MB)
+}
+
+message TransferResponse {
+  bool success = 1;
+  string message = 2;
+}
