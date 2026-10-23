@@ -76,5 +76,47 @@ def test_get(ruta_archivo: str):
     else:
         typer.echo(typer.style(mensaje, fg=typer.colors.RED))
 
+@app.command()
+def cd(ruta: str):
+    """
+    Cambia el directorio actual de trabajo.
+    Ejemplo: python main.py cd documentos
+    """
+    exito, mensaje = cliente.cambiar_directorio(ruta)
+    if exito:
+        typer.echo(typer.style(mensaje, fg=typer.colors.GREEN))
+    else:
+        typer.echo(typer.style(mensaje, fg=typer.colors.RED))
+
+@app.command()
+def mkdir(nombre: str):
+    """
+    Crea una nueva carpeta en el directorio actual.
+    Ejemplo: python main.py mkdir fotos
+    """
+    exito, mensaje = cliente.crear_directorio(nombre)
+    if exito:
+        typer.echo(typer.style(f"📁 {mensaje}", fg=typer.colors.GREEN, bold=True))
+    else:
+        typer.echo(typer.style(mensaje, fg=typer.colors.RED))
+
+@app.command()
+def rm(nombre: str):
+    """
+    Elimina un archivo o carpeta.
+    Ejemplo: python main.py rm archivo.txt
+    """
+    # Pedimos confirmación de seguridad para evitar borrados accidentales
+    confirmacion = typer.confirm(f"¿Estás seguro de que deseas eliminar '{nombre}'?")
+    if not confirmacion:
+        typer.echo("Operación cancelada.")
+        return
+
+    exito, mensaje = cliente.eliminar(nombre)
+    if exito:
+        typer.echo(typer.style(f"🗑️ {mensaje}", fg=typer.colors.GREEN))
+    else:
+        typer.echo(typer.style(mensaje, fg=typer.colors.RED))
+        
 if __name__ == "__main__":
     app()
