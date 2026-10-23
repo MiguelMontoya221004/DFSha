@@ -78,7 +78,28 @@ def mkdir(ruta: str):
     Ejemplo: python main.py mkdir documentos
     """
     mostrar(*cliente.crear_directorio(ruta))
+@app.command()
+def cd(ruta: str):
+    """
+    Cambia el directorio actual de trabajo.
+    Ejemplo: python main.py cd fotos
+    """
+    # Desempaquetamos la tupla (exito, mensaje) directo en la función mostrar
+    mostrar(*cliente.cambiar_directorio(ruta))
 
+@app.command()
+def rm(ruta: str):
+    """
+    Elimina un archivo o carpeta del clúster.
+    Ejemplo: python main.py rm /home/esteban/video.mp4
+    """
+    # Bloqueo de seguridad visual
+    confirmacion = typer.confirm(f"¿Estás seguro de que deseas eliminar '{ruta}'?")
+    if not confirmacion:
+        typer.echo("Operación cancelada.")
+        return
+    
+    mostrar(*cliente.eliminar(ruta))
 
 @app.command()
 def put(archivo_local: str, ruta_remota: str = typer.Argument(None)):
