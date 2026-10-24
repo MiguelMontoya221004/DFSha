@@ -140,13 +140,22 @@ public class DataNodes {
     public List<Nodo> elegirReplicas(int cuantas, Set<String> excluir) {
         List<Nodo> candidatos = new ArrayList<>();
         for (Nodo n : vivos()) if (!excluir.contains(n.id)) candidatos.add(n);
-        if (candidatos.size() < cuantas) {
-            throw ApiException.unavailable("no hay suficientes DataNodes vivos: se necesitan "
-                    + cuantas + " y hay " + candidatos.size());
+        if (candidatos.isEmpty()) {
+            throw ApiException.unavailable("no hay ningun DataNode vivo donde guardar el bloque");
+        }
+        // El numero de DataNodes es dinamico: si hay menos de los que pide el
+        // factor de replica, se guarda en los que haya y el bloque queda
+        // sub-replicado. Cuando entren mas DataNodes, la revision periodica
+        // completa las copias que faltan. Negarse a escribir seria peor.
+        int posibles = Math.min(cuantas, candidatos.size());
+        if (posibles < cuantas) {
+            log.warn("Solo hay {} DataNode(s) disponibles y se pedian {} replicas;"
+                    + " el bloque queda sub-replicado hasta que entren mas nodos",
+                    posibles, cuantas);
         }
         List<Nodo> elegidos = new ArrayList<>();
         Set<String> zonasUsadas = new HashSet<>();
-        while (elegidos.size() < cuantas && !candidatos.isEmpty()) {
+        while (elegidos.size() < posibles && !candidatos.isEmpty()) {
             List<Nodo> preferidos = new ArrayList<>();
             for (Nodo n : candidatos) if (!zonasUsadas.contains(n.zona)) preferidos.add(n);
             List<Nodo> pozo = preferidos.isEmpty() ? candidatos : preferidos;

@@ -60,7 +60,7 @@ public class Db {
         return switch (op) {
             case "get_user"     -> getUser(str(a, "username"));
             case "ls"           -> ls(a);
-            case "stat"         -> statOrFail(norm(str(a, "path")));
+            case "stat"         -> statConPermiso(a);
             case "upload"       -> uploadOrFail(str(a, "upload_id"));
             case "read"         -> read(a);
             case "datanodes"    -> datanodes();
@@ -86,7 +86,9 @@ public class Db {
         jdbc.update("INSERT INTO users (username, password_hash, group_name, created_at) VALUES (?,?,?,?)",
                 user, str(a, "password_hash"), group, now);
         String home = "/home/" + user;
-        if (stat(home) == null) createDir(home, user, group, 755, now);
+        // 700: la carpeta personal es PRIVADA. El enunciado pide que cada usuario
+        // gestione solo sus propios archivos, asi que por defecto nadie mas entra.
+        if (stat(home) == null) createDir(home, user, group, 700, now);
         return Map.of("username", user, "home", home);
     }
 
@@ -125,6 +127,13 @@ public class Db {
         return r.isEmpty() ? null : r.get(0);
     }
 
+    /** stat comprobando que el usuario pueda llegar hasta esa ruta. */
+    private Object statConPermiso(Map<String, Object> a) {
+        String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
+        return statOrFail(path);
+    }
+
     private Map<String, Object> statOrFail(String path) {
         Map<String, Object> f = stat(path);
         if (f == null) throw ApiException.notFound("no existe: " + path);
@@ -133,6 +142,7 @@ public class Db {
 
     private Object ls(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         Map<String, Object> dir = statOrFail(path);
         if (!(Boolean) dir.get("is_dir")) throw ApiException.badRequest("no es un directorio: " + path);
         requirePerm(dir, str(a, "user"), str(a, "group"), 'r');
@@ -150,6 +160,7 @@ public class Db {
     private Object mkdir(Map<String, Object> a) {
         String path = norm(str(a, "path"));
         String user = str(a, "user"), group = str(a, "group");
+        requireCamino(path, user, group);
         if (stat(path) != null) throw ApiException.conflict("ya existe: " + path);
         Map<String, Object> padre = statOrFail(parentOf(path));
         if (!(Boolean) padre.get("is_dir")) throw ApiException.badRequest("el padre no es un directorio");
@@ -160,6 +171,7 @@ public class Db {
 
     private Object rmdir(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         Map<String, Object> f = statOrFail(path);
         if (!(Boolean) f.get("is_dir")) throw ApiException.badRequest("no es un directorio");
         requirePerm(f, str(a, "user"), str(a, "group"), 'w');
@@ -172,6 +184,7 @@ public class Db {
 
     private Object rm(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         Map<String, Object> f = statOrFail(path);
         if ((Boolean) f.get("is_dir")) throw ApiException.badRequest("es un directorio, use rmdir");
         requirePerm(f, str(a, "user"), str(a, "group"), 'w');
@@ -185,6 +198,8 @@ public class Db {
 
     private Object mv(Map<String, Object> a) {
         String from = norm(str(a, "from")), to = norm(str(a, "to"));
+        requireCamino(from, str(a, "user"), str(a, "group"));
+        requireCamino(to, str(a, "user"), str(a, "group"));
         long now = lng(a, "now");
         Map<String, Object> f = statOrFail(from);
         requirePerm(f, str(a, "user"), str(a, "group"), 'w');
@@ -206,6 +221,7 @@ public class Db {
 
     private Object chmod(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         Map<String, Object> f = statOrFail(path);
         String user = str(a, "user");
         if (!user.equals(f.get("owner")) && !user.equals("root"))
@@ -221,6 +237,7 @@ public class Db {
     private Object beginWrite(Map<String, Object> a) {
         String path = norm(str(a, "path"));
         String user = str(a, "user"), group = str(a, "group");
+        requireCamino(path, user, group);
         long now = lng(a, "now");
         Map<String, Object> f = stat(path);
         int version;
@@ -333,6 +350,7 @@ public class Db {
 
     private Object read(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         Map<String, Object> f = statOrFail(path);
         if ((Boolean) f.get("is_dir")) throw ApiException.badRequest("es un directorio: " + path);
         requirePerm(f, str(a, "user"), str(a, "group"), 'r');
@@ -396,6 +414,7 @@ public class Db {
 
     private Object lock(Map<String, Object> a) {
         String path = norm(str(a, "path"));
+        requireCamino(path, str(a, "user"), str(a, "group"));
         statOrFail(path);
         tomarLock(path, str(a, "user"), lng(a, "now"), lng(a, "lease_until"));
         return Map.of("path", path, "owner", str(a, "user"), "expires_at", lng(a, "lease_until"));
@@ -474,6 +493,25 @@ public class Db {
     }
 
     // ===================== permisos y rutas =====================
+
+    /**
+     * Para llegar a una ruta hay que poder atravesar todos los directorios del
+     * camino, igual que en Linux (permiso 'x'). Sin esto un usuario podria
+     * listar /home/otro/carpeta aunque /home/otro sea privado, porque solo se
+     * miraba el permiso del destino y no el del camino.
+     */
+    private void requireCamino(String path, String user, String group) {
+        if ("root".equals(user)) return;
+        StringBuilder actual = new StringBuilder();
+        for (String parte : path.split("/")) {
+            if (parte.isEmpty()) continue;
+            actual.append('/').append(parte);
+            if (actual.toString().equals(path)) break;   // el destino se revisa aparte
+            Map<String, Object> dir = stat(actual.toString());
+            if (dir == null) break;
+            requirePerm(dir, user, group, 'x');
+        }
+    }
 
     private void requirePerm(Map<String, Object> f, String user, String group, char necesita) {
         if ("root".equals(user)) return;

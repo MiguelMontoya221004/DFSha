@@ -61,7 +61,8 @@ public class FileController {
 
         Map<String, Object> args = FsController.quien(req, "path", Db.str(body, "path"));
         args.put("upload_id", UUID.randomUUID().toString());
-        args.put("perms", body.get("perms") == null ? 644 : Db.lng(body, "perms"));
+        // 600: el archivo nace privado; para compartirlo se usa chmod o /shared
+        args.put("perms", body.get("perms") == null ? 600 : Db.lng(body, "perms"));
         args.put("now", ahora);
         args.put("lease_until", lease);
 
@@ -79,12 +80,16 @@ public class FileController {
         String uploadId = Db.str(body, "upload_id");
         String usuario = Auth.usuario(req);
 
-        Map<String, Object> up = (Map<String, Object>) raft.read("upload", Map.of("upload_id", uploadId));
-        if (!usuario.equals(up.get("owner")))
-            throw ApiException.forbidden("esa escritura la abrio otro usuario");
-        // sin lease vigente no se entregan tokens de escritura
-        if (!usuario.equals(up.get("lease_owner")) || Db.lng(up, "lease_hasta") <= System.currentTimeMillis())
-            throw ApiException.conflict("se vencio el lease; renuevelo con /files/write/renew o empiece de nuevo");
+        // Pedir un bloque ya demuestra que el escritor sigue vivo, asi que de
+        // paso se le renueva el lease. Asi una subida larga (muchos bloques) no
+        // se cae a la mitad sin que el cliente tenga que acordarse de renovar.
+        // renew_write ademas comprueba que la escritura sea de este usuario y
+        // que el lease no se haya vencido ya.
+        long ahora = System.currentTimeMillis();
+        Map<String, Object> args = FsController.quien(req, "upload_id", uploadId);
+        args.put("now", ahora);
+        args.put("lease_until", ahora + leaseSegundos * 1000);
+        raft.write("renew_write", args);
 
         String blockId = UUID.randomUUID().toString();
         List<DataNodes.Nodo> destinos = datanodes.elegirReplicas(replicacion, Set.of());
