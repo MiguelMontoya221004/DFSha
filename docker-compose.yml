@@ -15,10 +15,7 @@ x-secretos: &secretos
   DFSHA_BLOCK_SECRET: ${DFSHA_BLOCK_SECRET:-clave-hmac-compartida-con-los-datanodes}
 
 x-controlnode: &controlnode
-  build:
-    context: .
-    dockerfile: controlnode/Dockerfile
-  image: dfsha/controlnode:1.0.0
+  image: miguelmonto221004/dfsha-controlnode:latest
   networks: [dfsha]
   command: >
     --dfsha.raft.peers=n1|cn1:9501,n2|cn2:9501,n3|cn3:9501
@@ -27,10 +24,7 @@ x-controlnode: &controlnode
     --dfsha.block-secret=${DFSHA_BLOCK_SECRET:-clave-hmac-compartida-con-los-datanodes}
 
 x-datanode: &datanode
-  build:
-    context: .
-    dockerfile: datanode/Dockerfile
-  image: dfsha/datanode:0.4.0
+  image: miguelmonto221004/dfsha-datanode:latest
   networks: [dfsha]
   depends_on:
     cn1:
@@ -87,7 +81,7 @@ services:
     environment:
       <<: *secretos
       DFSHA_NODE_ID: dn-1
-      DFSHA_HOST: dn1
+      DFSHA_HOST: ${IP_PUBLICA:-localhost}
       DFSHA_CLIENT_PORT: 9001
       DFSHA_ZONE: zona-a
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
@@ -102,7 +96,7 @@ services:
     environment:
       <<: *secretos
       DFSHA_NODE_ID: dn-2
-      DFSHA_HOST: dn2
+      DFSHA_HOST: ${IP_PUBLICA:-localhost}
       DFSHA_CLIENT_PORT: 9001
       DFSHA_ZONE: zona-a
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
@@ -117,7 +111,7 @@ services:
     environment:
       <<: *secretos
       DFSHA_NODE_ID: dn-3
-      DFSHA_HOST: dn3
+      DFSHA_HOST: ${IP_PUBLICA:-localhost}
       DFSHA_CLIENT_PORT: 9001
       DFSHA_ZONE: zona-b
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
@@ -132,7 +126,7 @@ services:
     environment:
       <<: *secretos
       DFSHA_NODE_ID: dn-4
-      DFSHA_HOST: dn4
+      DFSHA_HOST: ${IP_PUBLICA:-localhost}
       DFSHA_CLIENT_PORT: 9001
       DFSHA_ZONE: zona-c
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
@@ -143,10 +137,7 @@ services:
 
   # ------------------------------ cliente ------------------------------
   client:
-    build:
-      context: .
-      dockerfile: client/Dockerfile
-    image: dfsha/client:0.4.0
+    image: miguelmonto221004/dfsha-client:latest
     container_name: dfsha-client
     depends_on: [cn1]
     environment:
