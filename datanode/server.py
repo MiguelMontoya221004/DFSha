@@ -14,17 +14,16 @@ entrega el token firmado que autoriza la operacion.
 
 Los errores salen como {"error": "..."}, igual que los del ControlNode.
 """
-import grpc
-from pb import dfsha_pb2, dfsha_pb2_grpc
 import logging
 import threading
 
-import httpx
+import grpc
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import tokens
 from config import VERSION
+from pb import dfsha_pb2, dfsha_pb2_grpc
 
 log = logging.getLogger("datanode.http")
 
@@ -76,8 +75,7 @@ def crear_app(config, almacen, control):
     @app.put("/blocks/{block_id}")
     async def subir_bloque(block_id: str, request: Request):
         """Recibe el contenido del bloque y, si quedan nodos en el pipeline, se
-        lo pasa al siguiente. Asi el cliente sube los datos una sola vez aunque
-        se guarden tres copias."""
+        lo pasa al siguiente por gRPC. Asi el cliente sube los datos una sola vez."""
         exigir_permiso(request, block_id, tokens.ESCRIBIR)
 
         checksum_esperado = request.headers.get("X-Block-Sha256")
@@ -118,8 +116,8 @@ def crear_app(config, almacen, control):
         destino = siguientes[0]
         resto_pipeline = siguientes[1:]
         
-        # Extraer los bytes del bloque (ajusta según cómo lo leas actualmente en tu código)
-        datos_bloque = await request.body() 
+        # Leemos el bloque que acabamos de guardar en disco
+        datos_bloque = b"".join(almacen.leer(bloque.block_id, chunk_size=config.chunk_size))
 
         # Conexión gRPC asíncrona hacia el siguiente DataNode
         async with grpc.aio.insecure_channel(destino) as canal:
@@ -133,23 +131,27 @@ def crear_app(config, almacen, control):
                 data=datos_bloque
             )
             
-            respuesta = await stub.TransferBlock(peticion, timeout=180)
+            respuesta = await stub.TransferBlock(peticion, timeout=TIMEOUT_PIPELINE)
             
             if not respuesta.success:
-                raise HTTPException(status_code=500, detail=f"Fallo en pipeline: {respuesta.message}")
+                raise HTTPException(status_code=500, detail=f"Fallo en pipeline hacia {destino}: {respuesta.message}")
+        
+        # Devolvemos los nodos donde logramos guardar para agregarlos a la respuesta
+        nodos_exitosos = [destino.split(":")[0]]
+        if resto_pipeline:
+            nodos_exitosos.extend(resto_pipeline)
+        return nodos_exitosos
 
     # -------------------------------- lectura --------------------------------
 
     @app.get("/blocks/{block_id}")
     def bajar_bloque(block_id: str, request: Request, offset: int = 0, length: int = 0):
-        """Devuelve el bloque completo o solo un rango. El rango se pide con los
-        parametros offset y length o con la cabecera Range."""
+        """Devuelve el bloque completo o solo un rango."""
         exigir_permiso(request, block_id, tokens.LEER)
 
         guardado = almacen.meta(block_id)
         if guardado is None or not almacen.existe(block_id):
-            raise HTTPException(status_code=404,
-                                detail=f"el bloque {block_id} no esta en este nodo")
+            raise HTTPException(status_code=404, detail=f"el bloque {block_id} no esta en este nodo")
 
         estado = 200
         cabeceras = {"X-Block-Sha256": guardado.sha256, "X-Block-Size": str(guardado.size)}
@@ -164,8 +166,7 @@ def crear_app(config, almacen, control):
             cabeceras["Content-Range"] = f"bytes {offset}-{ultimo}/{guardado.size}"
 
         if offset < 0 or offset > guardado.size:
-            raise HTTPException(status_code=416,
-                                detail="el desplazamiento esta fuera del bloque")
+            raise HTTPException(status_code=416, detail="el desplazamiento esta fuera del bloque")
 
         trozos = almacen.leer(block_id, offset, length, config.chunk_size)
         transferencias.entrar()
@@ -186,10 +187,8 @@ def crear_app(config, almacen, control):
         exigir_permiso(request, block_id, tokens.LEER)
         guardado = almacen.meta(block_id)
         if guardado is None:
-            raise HTTPException(status_code=404,
-                                detail=f"el bloque {block_id} no esta en este nodo")
-        return {"block_id": guardado.block_id, "size": guardado.size,
-                "checksum": guardado.sha256}
+            raise HTTPException(status_code=404, detail=f"el bloque {block_id} no esta en este nodo")
+        return {"block_id": guardado.block_id, "size": guardado.size, "checksum": guardado.sha256}
 
     @app.delete("/blocks/{block_id}")
     def borrar_bloque(block_id: str, request: Request):
@@ -219,8 +218,6 @@ def crear_app(config, almacen, control):
                 "control_nodes": config.control_nodes,
                 "registrado": control.registrado}
 
-    # Los errores de FastAPI salen como {"detail": ...}; aqui se dejan como
-    # {"error": ...}, igual que los del ControlNode.
     @app.exception_handler(HTTPException)
     async def error_uniforme(request: Request, exc: HTTPException):
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
