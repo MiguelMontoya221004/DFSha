@@ -20,7 +20,6 @@ import threading
 import time
 
 import grpc
-import httpx
 
 from config import VERSION
 from pb import dfsha_pb2, dfsha_pb2_grpc
@@ -197,39 +196,42 @@ class ControlNodes:
                     self.avisar_bloque_perdido(block_id, dfsha_pb2.BlockRemovedRequest.BORRADO)
 
     def _replicar(self, orden):
-        """Copia un bloque de este nodo a los destinos que pide el ControlNode.
-        Los datos van directo entre los dos DataNodes; el que recibe es el que
-        avisa con BlockReceived."""
+        """Copia un bloque de este nodo a los destinos que pide el ControlNode via gRPC.
+        El que recibe es el que avisa con BlockReceived."""
         guardado = self.almacen.meta(orden.block_id)
         if guardado is None:
             log.warning("Me piden replicar %s pero no lo tengo", orden.block_id)
             return
 
+        # Cargamos el bloque completo en memoria para enviarlo (los bloques son de 4MB, no hay problema)
+        datos_bloque = b"".join(self.almacen.leer(orden.block_id, chunk_size=self.config.chunk_size))
+
         for destino in orden.targets:
-            url = f"http://{destino.host}:{destino.peer_port}/blocks/{orden.block_id}"
-            cabeceras = {
-                # El comando no trae token, asi que firmamos uno nosotros con el
-                # secreto compartido para que el destino acepte la copia
-                "X-Block-Token": self._token_interno(orden.block_id),
-                "X-Block-Sha256": guardado.sha256,
-                "X-Pipeline": "",
-                "Content-Type": "application/octet-stream",
-            }
+            direccion_destino = f"{destino.host}:{destino.peer_port}"
+            
             try:
-                with httpx.Client(timeout=TIMEOUT_COPIA, trust_env=False) as cliente:
-                    respuesta = cliente.put(
-                        url, headers=cabeceras,
-                        content=self.almacen.leer(orden.block_id,
-                                                  chunk_size=self.config.chunk_size),
+                # Conexión gRPC hacia el DataNode destino
+                with grpc.insecure_channel(direccion_destino) as canal:
+                    stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
+                    
+                    peticion = dfsha_pb2.TransferRequest(
+                        block_id=orden.block_id,
+                        token=self._token_interno(orden.block_id),
+                        checksum=guardado.sha256,
+                        pipeline=[],  # Vacío porque es el destino final
+                        data=datos_bloque
                     )
-                if respuesta.status_code == 200:
-                    log.info("Bloque %s copiado a %s", orden.block_id, destino.node_id)
-                else:
-                    log.warning("%s rechazo el bloque %s: HTTP %d",
-                                destino.node_id, orden.block_id, respuesta.status_code)
-            except httpx.HTTPError as error:
+                    
+                    respuesta = stub.TransferBlock(peticion, timeout=TIMEOUT_COPIA)
+                    
+                    if respuesta.success:
+                        log.info("Bloque %s copiado a %s mediante gRPC", orden.block_id, destino.node_id)
+                    else:
+                        log.warning("%s rechazo el bloque %s: %s",
+                                    destino.node_id, orden.block_id, respuesta.message)
+            except grpc.RpcError as error:
                 log.warning("Fallo la copia de %s hacia %s: %s",
-                            orden.block_id, destino.node_id, error)
+                            orden.block_id, destino.node_id, error.code())
 
     def _token_interno(self, block_id, minutos=10):
         vence = int(time.time() * 1000) + minutos * 60 * 1000

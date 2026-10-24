@@ -14,6 +14,8 @@ entrega el token firmado que autoriza la operacion.
 
 Los errores salen como {"error": "..."}, igual que los del ControlNode.
 """
+import grpc
+from pb import dfsha_pb2, dfsha_pb2_grpc
 import logging
 import threading
 
@@ -113,37 +115,28 @@ def crear_app(config, almacen, control):
                 "checksum": bloque.sha256, "stored_on": guardado_en}
 
     async def reenviar(request, bloque, siguientes):
-        """Manda el bloque al siguiente DataNode del pipeline con el resto de la
-        cadena en la cabecera, para que el haga lo mismo."""
         destino = siguientes[0]
-        cabeceras = {
-            "X-Block-Token": leer_token(request),
-            "X-Block-Sha256": bloque.sha256,
-            "X-Pipeline": ",".join(siguientes[1:]),
-            "Content-Type": "application/octet-stream",
-        }
+        resto_pipeline = siguientes[1:]
+        
+        # Extraer los bytes del bloque (ajusta según cómo lo leas actualmente en tu código)
+        datos_bloque = await request.body() 
 
-        async def cuerpo():
-            # httpx necesita un generador asincrono para mandar el bloque por
-            # trozos sin cargarlo entero en memoria
-            for trozo in almacen.leer(bloque.block_id, chunk_size=config.chunk_size):
-                yield trozo
-
-        try:
-            # trust_env=False: entre nodos del cluster nunca se pasa por un proxy
-            async with httpx.AsyncClient(timeout=TIMEOUT_PIPELINE, trust_env=False) as cliente:
-                respuesta = await cliente.put(f"http://{destino}/blocks/{bloque.block_id}",
-                                              headers=cabeceras, content=cuerpo())
-            if respuesta.status_code == 200:
-                return respuesta.json().get("stored_on", [])
-            log.warning("El DataNode %s rechazo el bloque %s: HTTP %d",
-                        destino, bloque.block_id, respuesta.status_code)
-        except httpx.HTTPError as error:
-            # Que falle la cadena no invalida nuestra copia: el ControlNode
-            # repone las replicas que falten con su re-replicacion.
-            log.warning("No se pudo reenviar el bloque %s a %s: %s",
-                        bloque.block_id, destino, error)
-        return []
+        # Conexión gRPC asíncrona hacia el siguiente DataNode
+        async with grpc.aio.insecure_channel(destino) as canal:
+            stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
+            
+            peticion = dfsha_pb2.TransferRequest(
+                block_id=bloque.block_id,
+                token=request.headers.get("X-Block-Token", ""),
+                checksum=bloque.sha256,
+                pipeline=resto_pipeline,
+                data=datos_bloque
+            )
+            
+            respuesta = await stub.TransferBlock(peticion, timeout=180)
+            
+            if not respuesta.success:
+                raise HTTPException(status_code=500, detail=f"Fallo en pipeline: {respuesta.message}")
 
     # -------------------------------- lectura --------------------------------
 
