@@ -16,7 +16,7 @@ x-secretos: &secretos
 
 x-controlnode: &controlnode
   build:
-    context: ..
+    context: .
     dockerfile: controlnode/Dockerfile
   image: dfsha/controlnode:1.0.0
   networks: [dfsha]
@@ -28,7 +28,7 @@ x-controlnode: &controlnode
 
 x-datanode: &datanode
   build:
-    context: ..
+    context: .
     dockerfile: datanode/Dockerfile
   image: dfsha/datanode:0.4.0
   networks: [dfsha]
@@ -144,7 +144,7 @@ services:
   # ------------------------------ cliente ------------------------------
   client:
     build:
-      context: ..
+      context: .
       dockerfile: client/Dockerfile
     image: dfsha/client:0.4.0
     container_name: dfsha-client
