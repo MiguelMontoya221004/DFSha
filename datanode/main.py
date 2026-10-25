@@ -33,16 +33,25 @@ class DataNodeServicer(dfsha_pb2_grpc.DataNodeServiceServicer):
 
     def TransferBlock(self, request, context):
         try:
-            # 1. Guardar el bloque localmente
-            # Asumimos que almacen.escribir soporta recibir los bytes de una vez
-            self.almacen.escribir(request.block_id, [request.data])
+            # 1. Guardar el bloque localmente. Se usa la misma API que el
+            # camino HTTP: abrir la escritura, escribir los trozos y
+            # confirmar verificando el checksum.
+            escritor = self.almacen.abrir_escritura(request.block_id)
+            try:
+                escritor.escribir(request.data)
+                escritor.confirmar(request.checksum or None)
+            except Exception:
+                escritor.cancelar()   # no dejar un bloque a medias en disco
+                raise
             
             # 2. Pipeline: Si hay más nodos en la cadena, reenviarlo al siguiente
             if request.pipeline:
                 siguiente = request.pipeline[0]
                 resto = list(request.pipeline[1:])
                 
-                with grpc.insecure_channel(siguiente) as canal:
+                with grpc.insecure_channel(siguiente, options=[
+                    ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                    ("grpc.max_receive_message_length", 16 * 1024 * 1024)]) as canal:
                     stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
                     peticion = dfsha_pb2.TransferRequest(
                         block_id=request.block_id,
@@ -65,7 +74,13 @@ class DataNodeServicer(dfsha_pb2_grpc.DataNodeServiceServicer):
             return dfsha_pb2.TransferResponse(success=False, message=str(e))
 
 def iniciar_servidor_grpc(almacen, control, puerto_interno):
-    servidor = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    servidor = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        # Un bloque son 4 MiB EXACTOS y el mensaje lleva ademas el token y el
+        # checksum, asi que siempre supera el tope por defecto de gRPC (4 MiB).
+        options=[("grpc.max_send_message_length", 16 * 1024 * 1024),
+                 ("grpc.max_receive_message_length", 16 * 1024 * 1024)],
+    )
     dfsha_pb2_grpc.add_DataNodeServiceServicer_to_server(DataNodeServicer(almacen, control), servidor)
     servidor.add_insecure_port(f'[::]:{puerto_interno}')
     servidor.start()

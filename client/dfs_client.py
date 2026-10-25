@@ -250,7 +250,7 @@ class DFSClient:
         """
         nodos = asignado["nodes"]
         primero = nodos[0]
-        resto = [f"{n['host']}:{n['port']}" for n in nodos[1:]]
+        resto = [f"{n['host']}:{n['peer_port']}" for n in nodos[1:]]
         checksum = hashlib.sha256(datos).hexdigest()
 
         url = f"http://{primero['host']}:{primero['port']}/blocks/{asignado['block_id']}"

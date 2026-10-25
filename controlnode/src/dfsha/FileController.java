@@ -178,7 +178,13 @@ public class FileController {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("node_id", n.id);
             m.put("host", n.host);
+            // port: por donde el CLIENTE sube y baja el bloque
             m.put("port", n.port);
+            // peer_port: por donde los DataNodes se pasan el bloque entre ellos
+            // (el pipeline). El cliente lo necesita para armar la cabecera
+            // X-Pipeline; si manda el puerto del cliente, el DataNode abre gRPC
+            // contra el servidor HTTP y falla.
+            m.put("peer_port", n.peerPort);
             m.put("zona", n.zona);
             lista.add(m);
         }

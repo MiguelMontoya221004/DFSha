@@ -211,7 +211,9 @@ class ControlNodes:
             
             try:
                 # Conexión gRPC hacia el DataNode destino
-                with grpc.insecure_channel(direccion_destino) as canal:
+                with grpc.insecure_channel(direccion_destino, options=[
+                    ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                    ("grpc.max_receive_message_length", 16 * 1024 * 1024)]) as canal:
                     stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
                     
                     peticion = dfsha_pb2.TransferRequest(

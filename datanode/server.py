@@ -120,7 +120,9 @@ def crear_app(config, almacen, control):
         datos_bloque = b"".join(almacen.leer(bloque.block_id, chunk_size=config.chunk_size))
 
         # Conexión gRPC asíncrona hacia el siguiente DataNode
-        async with grpc.aio.insecure_channel(destino) as canal:
+        async with grpc.aio.insecure_channel(destino, options=[
+                ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                ("grpc.max_receive_message_length", 16 * 1024 * 1024)]) as canal:
             stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
             
             peticion = dfsha_pb2.TransferRequest(
