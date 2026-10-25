@@ -119,30 +119,41 @@ def crear_app(config, almacen, control):
         # Leemos el bloque que acabamos de guardar en disco
         datos_bloque = b"".join(almacen.leer(bloque.block_id, chunk_size=config.chunk_size))
 
-        # Conexión gRPC asíncrona hacia el siguiente DataNode
-        async with grpc.aio.insecure_channel(destino, options=[
-                ("grpc.max_send_message_length", 16 * 1024 * 1024),
-                ("grpc.max_receive_message_length", 16 * 1024 * 1024)]) as canal:
-            stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
-            
-            peticion = dfsha_pb2.TransferRequest(
-                block_id=bloque.block_id,
-                token=request.headers.get("X-Block-Token", ""),
-                checksum=bloque.sha256,
-                pipeline=resto_pipeline,
-                data=datos_bloque
-            )
-            
-            respuesta = await stub.TransferBlock(peticion, timeout=TIMEOUT_PIPELINE)
-            
+        # Conexión gRPC asíncrona hacia el siguiente DataNode.
+        # Si la cadena falla no se tumba la escritura: nuestra copia ya está en
+        # disco y el ControlNode repone las réplicas que falten con su
+        # re-replicación. Antes esto devolvía 500 y una subida entera se caía
+        # porque un solo DataNode de la cadena estaba apagado.
+        try:
+            async with grpc.aio.insecure_channel(destino, options=[
+                    ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                    ("grpc.max_receive_message_length", 16 * 1024 * 1024)]) as canal:
+                stub = dfsha_pb2_grpc.DataNodeServiceStub(canal)
+
+                peticion = dfsha_pb2.TransferRequest(
+                    block_id=bloque.block_id,
+                    token=request.headers.get("X-Block-Token", ""),
+                    checksum=bloque.sha256,
+                    pipeline=resto_pipeline,
+                    data=datos_bloque
+                )
+
+                respuesta = await stub.TransferBlock(peticion, timeout=TIMEOUT_PIPELINE)
+
             if not respuesta.success:
-                raise HTTPException(status_code=500, detail=f"Fallo en pipeline hacia {destino}: {respuesta.message}")
+                log.warning("El pipeline hacia %s rechazo el bloque %s: %s",
+                            destino, bloque.block_id, respuesta.message)
+                return []
+        except grpc.aio.AioRpcError as error:
+            log.warning("No se pudo reenviar el bloque %s a %s: %s",
+                        bloque.block_id, destino, error.code())
+            return []
         
-        # Devolvemos los nodos donde logramos guardar para agregarlos a la respuesta
-        nodos_exitosos = [destino.split(":")[0]]
-        if resto_pipeline:
-            nodos_exitosos.extend(resto_pipeline)
-        return nodos_exitosos
+        # Los node_id vienen en la respuesta del pipeline. Antes se armaban a
+        # partir de la direccion ("127.0.0.1:9103"), que no es un node_id: el
+        # ControlNode guardaba replicas con ids inexistentes y terminaba creyendo
+        # que cada bloque tenia una sola copia.
+        return list(respuesta.stored_on)
 
     # -------------------------------- lectura --------------------------------
 

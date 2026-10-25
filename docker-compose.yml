@@ -89,10 +89,11 @@ services:
       DFSHA_NODE_ID: dn-1
       DFSHA_HOST: dn1
       DFSHA_CLIENT_PORT: 9001
+      DFSHA_PEER_PORT: 9011
       DFSHA_ZONE: zona-a
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
       DFSHA_CAPACITY_BYTES: 8589934592
-    ports: ["9001:9001"]
+    ports: ["9001:9001", "9011:9011"]
     volumes:
       - dn1-data:/var/lib/dfsha/blocks
 
@@ -104,10 +105,11 @@ services:
       DFSHA_NODE_ID: dn-2
       DFSHA_HOST: dn2
       DFSHA_CLIENT_PORT: 9001
+      DFSHA_PEER_PORT: 9011
       DFSHA_ZONE: zona-a
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
       DFSHA_CAPACITY_BYTES: 8589934592
-    ports: ["9002:9001"]
+    ports: ["9002:9001", "9012:9011"]
     volumes:
       - dn2-data:/var/lib/dfsha/blocks
 
@@ -119,10 +121,11 @@ services:
       DFSHA_NODE_ID: dn-3
       DFSHA_HOST: dn3
       DFSHA_CLIENT_PORT: 9001
+      DFSHA_PEER_PORT: 9011
       DFSHA_ZONE: zona-b
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
       DFSHA_CAPACITY_BYTES: 8589934592
-    ports: ["9003:9001"]
+    ports: ["9003:9001", "9013:9011"]
     volumes:
       - dn3-data:/var/lib/dfsha/blocks
 
@@ -134,10 +137,11 @@ services:
       DFSHA_NODE_ID: dn-4
       DFSHA_HOST: dn4
       DFSHA_CLIENT_PORT: 9001
+      DFSHA_PEER_PORT: 9011
       DFSHA_ZONE: zona-c
       DFSHA_CONTROLNODES: cn1:50051,cn2:50051,cn3:50051
       DFSHA_CAPACITY_BYTES: 8589934592
-    ports: ["9004:9001"]
+    ports: ["9004:9001", "9014:9011"]
     volumes:
       - dn4-data:/var/lib/dfsha/blocks
 

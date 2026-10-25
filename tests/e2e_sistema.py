@@ -73,6 +73,7 @@ class Cluster:
                 "DFSHA_NODE_ID": f"dn-{i}",
                 "DFSHA_HOST": "127.0.0.1",
                 "DFSHA_CLIENT_PORT": str(puerto),
+                "DFSHA_PEER_PORT": str(puerto + 100),
                 "DFSHA_ZONE": ZONAS[(i - 1) % len(ZONAS)],
                 "DFSHA_DATA_DIR": str(self.carpeta / f"dn-{i}"),
                 "DFSHA_CONTROLNODES": GRPC,
@@ -166,10 +167,9 @@ def main():
     cluster = Cluster(carpeta)
     print(f"Carpeta de trabajo: {carpeta}")
     print("\n== Levantando 3 ControlNodes (Raft) + 4 DataNodes ==")
-    cluster.levantar()
-    print("  todo arriba")
-
     try:
+        cluster.levantar()
+        print("  todo arriba")
         pruebas(cluster, carpeta, args.size_mb)
     finally:
         if not args.keep:
@@ -195,7 +195,15 @@ def pruebas(cluster, carpeta, tam_mb):
     cliente = DFSClient(base_url=lider)
 
     print("\n== El DataNode responde por HTTP ==")
-    estado = requests.get("http://127.0.0.1:9001/status", timeout=5).json()
+    # El registro corre en un hilo aparte, asi que se le dan unos segundos para
+    # que termine antes de mirar el estado
+    estado = {}
+    fin = time.time() + 20
+    while time.time() < fin:
+        estado = requests.get("http://127.0.0.1:9001/status", timeout=5).json()
+        if estado.get("registrado"):
+            break
+        time.sleep(1)
     revisar("GET /status del DataNode", estado["node_id"] == "dn-1" and estado["registrado"],
             f"zona {estado['zone']} · registrado en {len(estado['control_nodes'])} ControlNodes")
 

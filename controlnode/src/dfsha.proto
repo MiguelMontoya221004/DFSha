@@ -221,4 +221,8 @@ message TransferRequest {
 message TransferResponse {
   bool success = 1;
   string message = 2;
+  // node_id de los DataNodes que guardaron el bloque: este y los que siguen en
+  // la cadena. El cliente los manda en el commit, asi que tienen que ser los
+  // ids reales del ControlNode, no direcciones.
+  repeated string stored_on = 3;
 }

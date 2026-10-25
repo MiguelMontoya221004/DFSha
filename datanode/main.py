@@ -23,26 +23,44 @@ from config import Config
 from control_node import ControlNodes
 from server import crear_app
 from storage import Almacen
+import tokens
 
 log = logging.getLogger("datanode")
 
 class DataNodeServicer(dfsha_pb2_grpc.DataNodeServiceServicer):
-    def __init__(self, almacen, control):
+    def __init__(self, almacen, control, config):
         self.almacen = almacen
         self.control = control
+        self.config = config
 
     def TransferBlock(self, request, context):
         try:
+            # 0. El token: este camino tambien escribe bloques, asi que pide el
+            # mismo permiso que el camino HTTP. Sin esto cualquiera que alcance
+            # el puerto del pipeline puede escribir o pisar un bloque.
+            valido, motivo = tokens.verificar(
+                request.token, request.block_id, tokens.ESCRIBIR, self.config.block_secret)
+            if not valido:
+                log.warning("Pipeline rechazado para el bloque %s: %s", request.block_id, motivo)
+                return dfsha_pb2.TransferResponse(
+                    success=False, message=f"token de bloque invalido: {motivo}")
+
             # 1. Guardar el bloque localmente. Se usa la misma API que el
             # camino HTTP: abrir la escritura, escribir los trozos y
             # confirmar verificando el checksum.
             escritor = self.almacen.abrir_escritura(request.block_id)
             try:
                 escritor.escribir(request.data)
-                escritor.confirmar(request.checksum or None)
+                bloque = escritor.confirmar(request.checksum or None)
             except Exception:
                 escritor.cancelar()   # no dejar un bloque a medias en disco
                 raise
+
+            # Avisar al ControlNode que esta replica ya existe. Sin este aviso
+            # el ControlNode solo conoce la copia del primer DataNode y, si ese
+            # se cae, da el bloque por perdido aunque este en otros dos.
+            self.control.avisar_bloque_recibido(bloque)
+            guardado_en = [self.config.node_id]
             
             # 2. Pipeline: Si hay más nodos en la cadena, reenviarlo al siguiente
             if request.pipeline:
@@ -67,13 +85,16 @@ class DataNodeServicer(dfsha_pb2_grpc.DataNodeServiceServicer):
                             success=False, 
                             message=f"Fallo reenviando a {siguiente}: {respuesta.message}"
                         )
+                    guardado_en.extend(respuesta.stored_on)
             
-            return dfsha_pb2.TransferResponse(success=True, message="Bloque replicado con éxito")
+            return dfsha_pb2.TransferResponse(success=True, message="Bloque replicado con éxito",
+                                              stored_on=guardado_en)
         except Exception as e:
             log.error("Error en TransferBlock gRPC: %s", e)
             return dfsha_pb2.TransferResponse(success=False, message=str(e))
 
-def iniciar_servidor_grpc(almacen, control, puerto_interno):
+def iniciar_servidor_grpc(almacen, control, config):
+    puerto_interno = config.peer_port
     servidor = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
         # Un bloque son 4 MiB EXACTOS y el mensaje lleva ademas el token y el
@@ -81,7 +102,8 @@ def iniciar_servidor_grpc(almacen, control, puerto_interno):
         options=[("grpc.max_send_message_length", 16 * 1024 * 1024),
                  ("grpc.max_receive_message_length", 16 * 1024 * 1024)],
     )
-    dfsha_pb2_grpc.add_DataNodeServiceServicer_to_server(DataNodeServicer(almacen, control), servidor)
+    dfsha_pb2_grpc.add_DataNodeServiceServicer_to_server(
+        DataNodeServicer(almacen, control, config), servidor)
     servidor.add_insecure_port(f'[::]:{puerto_interno}')
     servidor.start()
     log.info("Servidor gRPC interno escuchando en puerto %s", puerto_interno)
@@ -109,7 +131,7 @@ def main():
     threading.Thread(target=presentarse, name="registro", daemon=True).start()
 
     # LEVANTAR EL SERVIDOR GRPC INTERNO PARA REPLICACIÓN
-    servidor_grpc = iniciar_servidor_grpc(almacen, control, config.peer_port)
+    servidor_grpc = iniciar_servidor_grpc(almacen, control, config)
 
     try:
         # LEVANTAR LA API REST PARA EL CLIENTE

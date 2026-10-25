@@ -1,5 +1,6 @@
 import hashlib
 import os
+import time
 
 import requests
 from session import Session
@@ -201,21 +202,31 @@ class DFSClient:
                     if not trozo and indice > 0:
                         break
 
-                    # ---------- paso 2: pedir a dónde va este bloque ----------
-                    respuesta = requests.post(f"{self.base_url}/files/write/allocate",
-                                              json={"upload_id": upload_id},
-                                              headers=self._get_headers())
-                    if respuesta.status_code != 200:
-                        self._abortar(upload_id)
-                        return False, f"No se pudo asignar el bloque {indice}: {respuesta.text}"
+                    # ---------- pasos 2 y 3: pedir destino y mandar los bytes ----------
+                    # Si un DataNode se cae justo cuando nos toca usarlo, el
+                    # ControlNode todavía lo cree vivo por unos segundos (tarda
+                    # un par de heartbeats en darse cuenta). En vez de botar toda
+                    # la subida, se pide otro destino y se reintenta.
+                    ok, resultado, ultimo_error = False, None, ""
+                    for intento in range(1, 4):
+                        respuesta = requests.post(f"{self.base_url}/files/write/allocate",
+                                                  json={"upload_id": upload_id},
+                                                  headers=self._get_headers())
+                        if respuesta.status_code != 200:
+                            self._abortar(upload_id)
+                            return False, f"No se pudo asignar el bloque {indice}: {respuesta.text}"
 
-                    asignado = respuesta.json()
+                        asignado = respuesta.json()
+                        ok, resultado = self._subir_bloque(asignado, trozo)
+                        if ok:
+                            break
+                        ultimo_error = resultado
+                        time.sleep(2)   # darle tiempo al ControlNode a marcarlo caído
 
-                    # ---------- paso 3: mandar los bytes al primer DataNode ----------
-                    ok, resultado = self._subir_bloque(asignado, trozo)
                     if not ok:
                         self._abortar(upload_id)
-                        return False, f"Falló la subida del bloque {indice}: {resultado}"
+                        return False, (f"Falló la subida del bloque {indice} "
+                                       f"después de 3 intentos: {ultimo_error}")
 
                     nodos_usados.update(resultado["stored_on"])
                     bloques.append({
@@ -249,26 +260,36 @@ class DFSClient:
         X-Pipeline van los otros dos, para que él les pase la copia.
         """
         nodos = asignado["nodes"]
-        primero = nodos[0]
-        resto = [f"{n['host']}:{n['peer_port']}" for n in nodos[1:]]
         checksum = hashlib.sha256(datos).hexdigest()
+        errores = []
 
-        url = f"http://{primero['host']}:{primero['port']}/blocks/{asignado['block_id']}"
-        cabeceras = {
-            "X-Block-Token": asignado["token"],
-            "X-Block-Sha256": checksum,
-            "X-Pipeline": ",".join(resto),
-            "Content-Type": "application/octet-stream",
-        }
+        # Se intenta con cada DataNode como cabeza de la cadena. Si el primero
+        # está apagado (el ControlNode tarda unos segundos en notarlo), se le
+        # manda al segundo y ese replica a los demás: el token sirve para
+        # cualquiera de los tres, así que no hay que volver a pedir destino.
+        for posicion, cabeza in enumerate(nodos):
+            resto = [f"{n['host']}:{n['peer_port']}"
+                     for i, n in enumerate(nodos) if i != posicion]
 
-        try:
-            respuesta = requests.put(url, data=datos, headers=cabeceras, timeout=180)
-        except requests.RequestException as error:
-            return False, f"no respondió el DataNode {primero['node_id']}: {error}"
+            url = f"http://{cabeza['host']}:{cabeza['port']}/blocks/{asignado['block_id']}"
+            cabeceras = {
+                "X-Block-Token": asignado["token"],
+                "X-Block-Sha256": checksum,
+                "X-Pipeline": ",".join(resto),
+                "Content-Type": "application/octet-stream",
+            }
 
-        if respuesta.status_code != 200:
-            return False, respuesta.text
-        return True, respuesta.json()
+            try:
+                respuesta = requests.put(url, data=datos, headers=cabeceras, timeout=180)
+            except requests.RequestException as error:
+                errores.append(f"{cabeza['node_id']}: {error}")
+                continue
+
+            if respuesta.status_code == 200:
+                return True, respuesta.json()
+            errores.append(f"{cabeza['node_id']}: HTTP {respuesta.status_code} {respuesta.text}")
+
+        return False, "ningún DataNode de la cadena aceptó el bloque (" + "; ".join(errores) + ")"
 
     def _abortar(self, upload_id):
         """Si algo sale mal, se cancela la escritura para no dejar una versión
