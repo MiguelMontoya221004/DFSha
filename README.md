@@ -3,7 +3,7 @@
 **Proyecto 1 · ST0263 Tópicos Especiales en Telemática / SI3007 Sistemas Distribuidos · 2026-2**
 
 Integrantes: Samuel Aguilar · Sebastián Martínez · Miguel Montoya
-
+Video: https://youtu.be/FwuOfn7X9eA
 ---
 
 ## 1. Qué es
